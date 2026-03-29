@@ -666,6 +666,59 @@ document.getElementById('addr-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-addr-search').click();
 });
 
+// ── Pass Detail Modal ──────────────────────────────────────────────────────────
+function openPassDetail(idx) {
+  const p = passes[idx];
+  if (!p) return;
+  const durSec = Math.round((p.end - p.start) / 1000);
+  const rating = passRating(p.peakEl, durSec, p.cloudPct);
+  const tf = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' });
+  const df = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' });
+  const cloudStr = p.cloudPct == null
+    ? 'Weather unavailable'
+    : `${cloudIcon(p.cloudPct)} ${p.cloudPct}% — ${p.cloudPct < 20 ? 'Clear skies' : p.cloudPct < 50 ? 'Partly cloudy' : p.cloudPct < 80 ? 'Mostly cloudy' : 'Overcast'}`;
+  const visNote = p.cloudPct != null && p.cloudPct >= 80 ? 'Heavy cloud cover — ISS may not be visible.'
+                : p.cloudPct != null && p.cloudPct >= 50 ? 'Moderate cloud cover may reduce visibility.' : '';
+
+  document.getElementById('pass-detail-content').innerHTML = `
+    <div class="det-header">
+      <div class="det-date">${df.format(p.start)}</div>
+      <div class="det-time">${tf.format(p.start)} – ${tf.format(p.end)}</div>
+      <div class="det-stars q-r${rating}">${ratingStars(rating)}</div>
+    </div>
+    <div class="det-events">
+      <div class="det-event">
+        <div class="det-ev-label">Appears</div>
+        <div class="det-ev-time">${tf.format(p.start)}</div>
+        <div class="det-ev-dir">${compass(p.startAz)}</div>
+      </div>
+      <div class="det-event det-event-peak">
+        <div class="det-ev-label">Peak</div>
+        <div class="det-ev-time">${tf.format(p.peak)}</div>
+        <div class="det-ev-dir">${compass(p.peakAz)}</div>
+        <div class="det-ev-el">${p.peakEl.toFixed(0)}° up</div>
+      </div>
+      <div class="det-event">
+        <div class="det-ev-label">Disappears</div>
+        <div class="det-ev-time">${tf.format(p.end)}</div>
+        <div class="det-ev-dir">${compass(p.endAz)}</div>
+      </div>
+    </div>
+    <div class="det-stats">
+      <div class="det-stat"><span>Duration</span><strong>${durFmt(durSec)}</strong></div>
+      <div class="det-stat"><span>Max elevation</span><strong>${p.peakEl.toFixed(1)}°</strong></div>
+      <div class="det-stat"><span>Cloud cover</span><strong>${cloudStr}</strong></div>
+    </div>
+    ${visNote ? `<div class="det-note">${visNote}</div>` : ''}
+    <div class="det-guide">Face <strong>${compass(p.startAz)}</strong> at <strong>${tf.format(p.start)}</strong> and look toward the horizon. Track the ISS as it arcs to <strong>${p.peakEl.toFixed(0)}°</strong> in the <strong>${compass(p.peakAz)}</strong>.</div>
+  `;
+  document.getElementById('pass-detail-overlay').classList.add('open');
+}
+
+function closePassDetail() {
+  document.getElementById('pass-detail-overlay').classList.remove('open');
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function setStatus(msg) { document.getElementById('status-text').textContent = msg; }
 function setText(id, val) { document.getElementById(id).textContent = val; }
