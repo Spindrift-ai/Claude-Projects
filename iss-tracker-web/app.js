@@ -14,6 +14,7 @@ let map, issMarker, userMarker, trackLine, passTrackLine;
 let satrec = null;
 let userLat = null, userLon = null;
 let passes  = [];
+let passesComputing = false;
 let passRefreshTimer = null;
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
@@ -236,7 +237,7 @@ function computePasses(lat, lon) {
       cur.end = date;
       // Only keep the pass if observer is in darkness AND ISS is sunlit at peak
       const sunVec = sunEciUnit(cur.peak);
-      const obsInDark   = sunElevDeg(cur.peak, lat, lon) < -6;
+      const obsInDark   = sunElevDeg(cur.peak, lat, lon) < 0;  // after sunset / before sunrise
       const issLit      = issInSunlight(cur.peakPosEci, sunVec);
       if (obsInDark && issLit) result.push(cur);
       cur = null;
@@ -246,11 +247,17 @@ function computePasses(lat, lon) {
 }
 
 function recomputePasses() {
-  if (userLat === null) return;
+  if (userLat === null || !satrec) {
+    renderPasses(); // show appropriate state
+    return;
+  }
+  passesComputing = true;
+  renderPasses(); // show "Computing…" state immediately
   setStatus('Computing passes…');
-  // Yield to browser then compute
+  // Yield to browser then compute (avoids UI freeze on slow phones)
   setTimeout(() => {
     passes = computePasses(userLat, userLon);
+    passesComputing = false;
     drawNextPassTrack();
     renderPasses();
     scheduleNotifications();
@@ -259,8 +266,8 @@ function recomputePasses() {
       passes = computePasses(userLat, userLon);
       renderPasses();
       scheduleNotifications();
-    }, 30 * 60_000);
-  }, 20);
+    }, 30 * 60000);
+  }, 50);
 }
 
 // Draw the next upcoming pass ground track on the map
@@ -303,16 +310,29 @@ const durFmt      = s => s >= 60 ? `${Math.floor(s/60)}m ${s % 60}s` : `${s}s`;
 
 function renderPasses() {
   const el = document.getElementById('passes-content');
+
+  // Defensive: try to recover location from localStorage if JS state was lost
+  if (userLat === null) {
+    try {
+      const saved = localStorage.getItem('loc');
+      if (saved) { const { lat, lon } = JSON.parse(saved); userLat = lat; userLon = lon; }
+    } catch (e) {}
+  }
+
   if (userLat === null) {
     el.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><p>Set your location in Settings<br>to see upcoming passes</p></div>`;
     return;
   }
   if (!satrec) {
-    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⏳</div><p>Loading orbital data…<br><small style="color:var(--text2);font-size:13px">Fetching latest TLE from network</small></p></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⏳</div><p>Loading orbital data…<br><small style="color:var(--text2);font-size:13px">Fetching latest TLE from network</small></p><button class="btn btn-secondary" style="margin-top:16px;width:auto;padding:10px 24px" onclick="doFetchTLE()">Retry</button></div>`;
+    return;
+  }
+  if (passesComputing) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔄</div><p>Computing passes…<br><small style="color:var(--text2);font-size:13px">Scanning the next ${PASS_DAYS} days</small></p></div>`;
     return;
   }
   if (!passes.length) {
-    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🌙</div><p>No visible night passes<br>in the next ${PASS_DAYS} days</p><p style="font-size:13px;margin-top:8px;color:var(--text2)">Only passes where it's dark at your location<br>and the ISS is sunlit are shown</p></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🌙</div><p>No visible night passes<br>in the next ${PASS_DAYS} days</p><p style="font-size:13px;margin-top:8px;color:var(--text2)">Only passes where it's dark at your<br>location and the ISS is sunlit are shown</p><button class="btn btn-secondary" style="margin-top:16px;width:auto;padding:10px 24px" onclick="recomputePasses()">Refresh</button></div>`;
     return;
   }
 
@@ -445,19 +465,24 @@ function setLocation(lat, lon) {
 }
 
 function loadSavedState() {
-  const loc = localStorage.getItem('loc');
-  if (loc) {
-    const { lat, lon } = JSON.parse(loc);
-    document.getElementById('lat-input').value = lat.toFixed(4);
-    document.getElementById('lon-input').value = lon.toFixed(4);
-    document.getElementById('location-text').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
-    document.getElementById('current-location').style.color = 'var(--text)';
-    userLat = lat; userLon = lon;
-    // Passes computed after TLE loads (handled in fetchTLE callback)
+  try {
+    const loc = localStorage.getItem('loc');
+    if (loc) {
+      const { lat, lon } = JSON.parse(loc);
+      document.getElementById('lat-input').value = lat.toFixed(4);
+      document.getElementById('lon-input').value = lon.toFixed(4);
+      document.getElementById('location-text').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+      document.getElementById('current-location').style.color = 'var(--text)';
+      userLat = lat; userLon = lon;
+    }
+  } catch (e) {
+    console.warn('loadSavedState failed:', e);
   }
-  if (localStorage.getItem('notif') === '1' && Notification?.permission === 'granted') {
-    refreshNotifUI();
-  }
+  try {
+    if (localStorage.getItem('notif') === '1' && Notification?.permission === 'granted') {
+      refreshNotifUI();
+    }
+  } catch (e) {}
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────────
@@ -467,7 +492,14 @@ function initTabs() {
       document.querySelectorAll('.tab-btn,.tab-panel').forEach(el => el.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-      if (btn.dataset.tab === 'passes') renderPasses();
+      if (btn.dataset.tab === 'passes') {
+        // If we have location + TLE but no passes yet, trigger compute
+        if (userLat !== null && satrec && !passes.length && !passesComputing) {
+          recomputePasses();
+        } else {
+          renderPasses();
+        }
+      }
     });
   });
 }
