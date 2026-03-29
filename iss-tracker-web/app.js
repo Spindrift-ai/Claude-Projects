@@ -1,0 +1,452 @@
+'use strict';
+
+// ── Config ─────────────────────────────────────────────────────────────────────
+const TLE_URL_PRIMARY  = 'https://tle.ivanstanojevic.me/api/tle/25544';
+const TLE_URL_FALLBACK = 'https://api.wheretheiss.at/v1/satellites/25544/tles';
+const MIN_ELEV_DEG     = 10;
+const PASS_DAYS        = 7;
+const STEP_SEC         = 10;
+const UPDATE_MS        = 5000;
+const TLE_TTL_MS       = 3600 * 1000;
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let map, issMarker, userMarker, trackLine, passTrackLine;
+let satrec = null;
+let userLat = null, userLon = null;
+let passes  = [];
+let passRefreshTimer = null;
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  registerSW();
+  initMap();
+  initTabs();
+  loadSavedState();
+  fetchTLE().then(() => {
+    startTracking();
+    if (userLat !== null) recomputePasses();
+  });
+  refreshNotifUI();
+  detectIOS();
+});
+
+// ── Service Worker ─────────────────────────────────────────────────────────────
+function registerSW() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js')
+      .then(reg => console.log('SW registered', reg.scope))
+      .catch(e  => console.warn('SW failed', e));
+  }
+}
+
+// ── Map ────────────────────────────────────────────────────────────────────────
+function initMap() {
+  map = L.map('map', { center: [20, 0], zoom: 2, zoomControl: true, attributionControl: false });
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 19
+  }).addTo(map);
+
+  const issIcon = L.divIcon({
+    html: '<div class="iss-marker"></div>',
+    iconSize: [18, 18], iconAnchor: [9, 9], className: ''
+  });
+  issMarker   = L.marker([20, 0], { icon: issIcon }).addTo(map);
+  trackLine   = L.polyline([], { color: '#4a9eff', weight: 1.5, opacity: .5, dashArray: '5 4' }).addTo(map);
+  passTrackLine = L.polyline([], { color: '#f7e04a', weight: 2, opacity: .35, dashArray: '8 5' }).addTo(map);
+}
+
+// ── TLE ────────────────────────────────────────────────────────────────────────
+async function fetchTLE() {
+  const cachedTLE = localStorage.getItem('tle');
+  const cachedAt  = Number(localStorage.getItem('tle_at') || 0);
+  if (cachedTLE && (Date.now() - cachedAt) < TLE_TTL_MS) {
+    const { line1, line2 } = JSON.parse(cachedTLE);
+    satrec = satellite.twoline2satrec(line1, line2);
+    setTLEAge(cachedAt);
+    scheduleNextTLEFetch();
+    return;
+  }
+  await doFetchTLE();
+}
+
+async function doFetchTLE() {
+  let line1, line2;
+  try {
+    const r    = await fetch(TLE_URL_PRIMARY);
+    const data = await r.json();
+    line1 = data.line1; line2 = data.line2;
+  } catch {
+    try {
+      const r    = await fetch(TLE_URL_FALLBACK);
+      const data = await r.json();
+      line1 = data.line1; line2 = data.line2;
+    } catch (e) {
+      console.error('TLE fetch failed:', e);
+      setStatus('TLE unavailable – retrying…');
+      setTimeout(doFetchTLE, 60_000);
+      return;
+    }
+  }
+  satrec = satellite.twoline2satrec(line1, line2);
+  const now = Date.now();
+  localStorage.setItem('tle', JSON.stringify({ line1, line2 }));
+  localStorage.setItem('tle_at', String(now));
+  setTLEAge(now);
+  scheduleNextTLEFetch();
+  // Recompute passes with fresh TLE
+  if (userLat !== null) recomputePasses();
+}
+
+function scheduleNextTLEFetch() { setTimeout(doFetchTLE, TLE_TTL_MS); }
+
+function setTLEAge(fetchedAtMs) {
+  const mins = Math.round((Date.now() - fetchedAtMs) / 60_000);
+  document.getElementById('tle-age').textContent =
+    mins < 2 ? 'Just now' : mins < 60 ? `${mins} min ago` : `${Math.round(mins/60)}h ago`;
+}
+
+// ── Live Tracking ──────────────────────────────────────────────────────────────
+function startTracking() {
+  updatePosition();
+  setInterval(updatePosition, UPDATE_MS);
+}
+
+function updatePosition() {
+  if (!satrec) return;
+  const now    = new Date();
+  const posVel = satellite.propagate(satrec, now);
+  if (!posVel?.position) return;
+
+  const gmst = satellite.gstime(now);
+  const geod = satellite.eciToGeodetic(posVel.position, gmst);
+  const lat  = satellite.degreesLat(geod.latitude);
+  const lon  = satellite.degreesLong(geod.longitude);
+  const alt  = geod.height;   // km
+  const spd  = Math.sqrt(posVel.velocity.x**2 + posVel.velocity.y**2 + posVel.velocity.z**2) * 3600;
+
+  // Map
+  issMarker.setLatLng([lat, lon]);
+  appendTrackPoint(lat, lon);
+
+  // Telemetry
+  setText('t-alt', alt.toFixed(1) + ' km');
+  setText('t-vel', Math.round(spd).toLocaleString() + ' km/h');
+  setText('t-lat', lat.toFixed(2) + '°');
+  setText('t-lon', lon.toFixed(2) + '°');
+  document.getElementById('live-dot').classList.add('live');
+
+  // Status
+  if (userLat !== null) {
+    const el = getElevation(posVel.position, gmst, userLat, userLon);
+    setStatus(el > 0 ? `Visible – ${el.toFixed(1)}° above your horizon` : 'Below your horizon');
+  } else {
+    setStatus('Live · Open Settings to set your location');
+  }
+}
+
+function appendTrackPoint(lat, lon) {
+  const pts = trackLine.getLatLngs();
+  if (pts.length > 0) {
+    const last = pts[pts.length - 1];
+    if (Math.abs(lon - last.lng) > 100) { trackLine.setLatLngs([]); }  // antimeridian reset
+  }
+  const p = trackLine.getLatLngs();
+  p.push(L.latLng(lat, lon));
+  if (p.length > 90) p.shift();
+  trackLine.setLatLngs(p);
+}
+
+function getElevation(posEci, gmst, lat, lon) {
+  const obs    = { longitude: satellite.degreesToRadians(lon), latitude: satellite.degreesToRadians(lat), height: 0 };
+  const posEcf = satellite.eciToEcf(posEci, gmst);
+  const look   = satellite.ecfToLookAngles(obs, posEcf);
+  return satellite.radiansToDegrees(look.elevation);
+}
+
+// ── Pass Computation ───────────────────────────────────────────────────────────
+function computePasses(lat, lon) {
+  if (!satrec) return [];
+  const obs = { longitude: satellite.degreesToRadians(lon), latitude: satellite.degreesToRadians(lat), height: 0 };
+  const now = Date.now();
+  const end = now + PASS_DAYS * 86400_000;
+  const result = [];
+  let inPass = false, cur = null;
+
+  for (let t = now; t < end; t += STEP_SEC * 1000) {
+    const date   = new Date(t);
+    const pv     = satellite.propagate(satrec, date);
+    if (!pv?.position) continue;
+    const gmst   = satellite.gstime(date);
+    const posEcf = satellite.eciToEcf(pv.position, gmst);
+    const look   = satellite.ecfToLookAngles(obs, posEcf);
+    const el     = satellite.radiansToDegrees(look.elevation);
+    const az     = satellite.radiansToDegrees(look.azimuth);
+
+    if (el >= MIN_ELEV_DEG) {
+      if (!inPass) {
+        inPass = true;
+        cur = { start: date, peak: date, peakEl: el, peakAz: az, startAz: az, endAz: az };
+      } else {
+        if (el > cur.peakEl) { cur.peak = date; cur.peakEl = el; cur.peakAz = az; }
+        cur.endAz = az;
+      }
+    } else if (inPass) {
+      inPass = false; cur.end = date; result.push(cur); cur = null;
+    }
+  }
+  return result;
+}
+
+function recomputePasses() {
+  if (userLat === null) return;
+  setStatus('Computing passes…');
+  // Yield to browser then compute
+  setTimeout(() => {
+    passes = computePasses(userLat, userLon);
+    drawNextPassTrack();
+    renderPasses();
+    scheduleNotifications();
+    if (passRefreshTimer) clearInterval(passRefreshTimer);
+    passRefreshTimer = setInterval(() => {
+      passes = computePasses(userLat, userLon);
+      renderPasses();
+      scheduleNotifications();
+    }, 30 * 60_000);
+  }, 20);
+}
+
+// Draw the next upcoming pass ground track on the map
+function drawNextPassTrack() {
+  passTrackLine.setLatLngs([]);
+  const next = passes.find(p => p.end > new Date());
+  if (!next || !satrec) return;
+
+  const pts = [];
+  const step = 15_000; // 15s steps
+  for (let t = next.start.getTime() - 2 * 60_000; t <= next.end.getTime() + 2 * 60_000; t += step) {
+    const pv = satellite.propagate(satrec, new Date(t));
+    if (!pv?.position) continue;
+    const gmst = satellite.gstime(new Date(t));
+    const geod = satellite.eciToGeodetic(pv.position, gmst);
+    pts.push([satellite.degreesLat(geod.latitude), satellite.degreesLong(geod.longitude)]);
+  }
+  // Handle antimeridian: split segments
+  const segments = [[]];
+  for (let i = 0; i < pts.length; i++) {
+    const seg = segments[segments.length - 1];
+    if (seg.length > 0 && Math.abs(pts[i][1] - seg[seg.length - 1][1]) > 100) {
+      segments.push([]);
+    }
+    segments[segments.length - 1].push(pts[i]);
+  }
+  passTrackLine.setLatLngs(segments);
+}
+
+// ── Passes Rendering ───────────────────────────────────────────────────────────
+const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+const compass  = az => COMPASS[Math.round(az / 22.5) % 16];
+const quality  = el => el >= 60 ? 'excellent' : el >= 30 ? 'good' : 'fair';
+const stars    = el => el >= 60 ? '★★★' : el >= 30 ? '★★' : '★';
+const durFmt   = s  => s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+
+function renderPasses() {
+  const el = document.getElementById('passes-content');
+  if (userLat === null) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><p>Set your location in Settings<br>to see upcoming passes</p></div>`;
+    return;
+  }
+  if (!passes.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔭</div><p>No visible passes (above 10°)<br>in the next ${PASS_DAYS} days</p></div>`;
+    return;
+  }
+
+  const now = Date.now();
+  const timeFmt = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' });
+  const dayFmt  = new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' });
+
+  // Notification CTA
+  let html = '';
+  if (Notification?.permission !== 'granted') {
+    html += `<div class="notif-cta">
+      <div class="notif-cta-body">
+        <strong>🔔 Get pass alerts</strong>
+        <span>24 h, 1 h and 5 min ahead</span>
+      </div>
+      <button class="btn-inline" onclick="enableNotifications()">Enable</button>
+    </div>`;
+  }
+
+  // Group by day
+  const days = {};
+  for (const p of passes) {
+    const d = new Date(p.start); d.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const tom   = new Date(today); tom.setDate(tom.getDate() + 1);
+    const key   = +d === +today ? 'Today' : +d === +tom ? 'Tomorrow' : dayFmt.format(d);
+    (days[key] = days[key] || []).push(p);
+  }
+
+  for (const [label, group] of Object.entries(days)) {
+    html += `<div class="passes-day"><div class="day-label">${label}</div>`;
+    for (const p of group) {
+      const sec     = (p.start - now) / 1000;
+      const isNow   = now >= p.start && now <= p.end;
+      const durSec  = Math.round((p.end - p.start) / 1000);
+      const q       = quality(p.peakEl);
+      let badge;
+      if (isNow)       badge = `<span class="pass-badge badge-now">NOW</span>`;
+      else if (sec<3600) badge = `<span class="pass-badge badge-soon">in ${Math.floor(sec/60)}m</span>`;
+      else if (sec<86400){ const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);
+                           badge = `<span class="pass-badge badge-hours">in ${h}h ${m}m</span>`; }
+      else               badge = `<span class="pass-badge badge-days">in ${Math.floor(sec/86400)}d</span>`;
+
+      html += `<div class="pass-card ${q}${isNow?' active-now':''}">
+        <span class="pass-quality q-${q}">${stars(p.peakEl)}</span>
+        <div class="pass-header">
+          <span class="pass-time">${timeFmt.format(p.start)}</span>
+          ${badge}
+        </div>
+        <div class="pass-details">
+          <span>${compass(p.startAz)} → ${compass(p.endAz)}</span>
+          <span>Max <strong>${p.peakEl.toFixed(0)}°</strong></span>
+          <span>${durFmt(durSec)}</span>
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+// Refresh countdowns every minute
+setInterval(() => { if (userLat !== null) renderPasses(); }, 60_000);
+
+// ── Notifications ──────────────────────────────────────────────────────────────
+async function enableNotifications() {
+  if (!('Notification' in window)) {
+    alert('Notifications are not supported in this browser.\n\nOn iPhone, add this page to your Home Screen first, then open it from there.');
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  refreshNotifUI();
+  if (perm === 'granted') {
+    localStorage.setItem('notif', '1');
+    scheduleNotifications();
+  } else if (perm === 'denied') {
+    alert('Notification permission denied. To fix this, go to your browser/phone settings and allow notifications for this site.');
+  }
+}
+
+function scheduleNotifications() {
+  if (Notification?.permission !== 'granted' || !passes.length) return;
+  const payload = { type: 'SCHEDULE', passes: passes.map(p => ({
+    start: p.start.getTime(), end: p.end.getTime(),
+    peakEl: p.peakEl, startAz: p.startAz, endAz: p.endAz
+  }))};
+  navigator.serviceWorker?.ready.then(reg => reg.active?.postMessage(payload));
+}
+
+function refreshNotifUI() {
+  const btn    = document.getElementById('btn-notif');
+  const status = document.getElementById('notif-status');
+  if (!('Notification' in window)) {
+    btn.textContent = '🔔 Enable Pass Notifications';
+    status.textContent = '';
+    return;
+  }
+  if (Notification.permission === 'granted') {
+    btn.textContent = '✓ Notifications Enabled';
+    btn.className   = 'btn on';
+    btn.disabled    = true;
+    status.textContent = 'You\'ll be alerted 24 h, 1 h, and 5 min before each pass.';
+    status.className   = 'ok';
+  } else if (Notification.permission === 'denied') {
+    btn.textContent  = 'Notifications Blocked';
+    btn.className    = 'btn off';
+    btn.disabled     = true;
+    status.textContent = 'Enable notifications in your browser settings to receive alerts.';
+    status.className   = 'err';
+  }
+}
+
+// ── Location ───────────────────────────────────────────────────────────────────
+function setLocation(lat, lon) {
+  userLat = lat; userLon = lon;
+  localStorage.setItem('loc', JSON.stringify({ lat, lon }));
+
+  document.getElementById('lat-input').value = lat.toFixed(4);
+  document.getElementById('lon-input').value = lon.toFixed(4);
+  document.getElementById('location-text').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  document.getElementById('current-location').style.color = 'var(--text)';
+
+  if (userMarker) map.removeLayer(userMarker);
+  userMarker = L.circleMarker([lat, lon], {
+    radius: 7, color: '#4a9eff', fillColor: '#4a9eff',
+    fillOpacity: .85, weight: 2
+  }).bindPopup('Your Location').addTo(map);
+
+  recomputePasses();
+}
+
+function loadSavedState() {
+  const loc = localStorage.getItem('loc');
+  if (loc) {
+    const { lat, lon } = JSON.parse(loc);
+    document.getElementById('lat-input').value = lat.toFixed(4);
+    document.getElementById('lon-input').value = lon.toFixed(4);
+    document.getElementById('location-text').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+    document.getElementById('current-location').style.color = 'var(--text)';
+    userLat = lat; userLon = lon;
+    // Passes computed after TLE loads (handled in fetchTLE callback)
+  }
+  if (localStorage.getItem('notif') === '1' && Notification?.permission === 'granted') {
+    refreshNotifUI();
+  }
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────────
+function initTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn,.tab-panel').forEach(el => el.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+      if (btn.dataset.tab === 'passes') renderPasses();
+    });
+  });
+}
+
+// ── iOS hint ───────────────────────────────────────────────────────────────────
+function detectIOS() {
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const isStandalone = window.navigator.standalone;
+  // Show "add to home screen" hint only on iOS Safari, not in standalone mode
+  if (isIOS && !isStandalone) {
+    document.getElementById('ios-hint').style.display = 'block';
+  }
+}
+
+// ── Event Wiring ───────────────────────────────────────────────────────────────
+document.getElementById('btn-detect').addEventListener('click', () => {
+  if (!navigator.geolocation) { alert('Geolocation is not available.'); return; }
+  setStatus('Getting your location…');
+  navigator.geolocation.getCurrentPosition(
+    p => setLocation(p.coords.latitude, p.coords.longitude),
+    e => { setStatus('Location error'); alert(e.message); }
+  );
+});
+
+document.getElementById('btn-set-location').addEventListener('click', () => {
+  const lat = parseFloat(document.getElementById('lat-input').value);
+  const lon = parseFloat(document.getElementById('lon-input').value);
+  if (isNaN(lat) || lat < -90  || lat > 90)  { alert('Latitude must be between -90 and 90');   return; }
+  if (isNaN(lon) || lon < -180 || lon > 180) { alert('Longitude must be between -180 and 180'); return; }
+  setLocation(lat, lon);
+});
+
+document.getElementById('btn-notif').addEventListener('click', enableNotifications);
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function setStatus(msg) { document.getElementById('status-text').textContent = msg; }
+function setText(id, val) { document.getElementById(id).textContent = val; }

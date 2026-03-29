@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ISS Tracker">
+  <meta name="theme-color" content="#0a0e1a">
+  <title>ISS Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-180.svg">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────────────── -->
+  <header class="header">
+    <span class="app-title">ISS Tracker</span>
+    <div class="header-right">
+      <span class="live-dot" id="live-dot"></span>
+      <span class="status-text" id="status-text">Starting…</span>
+    </div>
+  </header>
+
+  <!-- ── Main panels ────────────────────────────────────────────── -->
+  <main class="main">
+
+    <!-- Live Map -->
+    <div class="tab-panel active" id="panel-map">
+      <div id="map"></div>
+      <div class="map-overlay">
+        <div class="telemetry-grid">
+          <div class="telem-cell">
+            <span class="telem-label">Altitude</span>
+            <span class="telem-value" id="t-alt">—</span>
+          </div>
+          <div class="telem-cell">
+            <span class="telem-label">Speed</span>
+            <span class="telem-value" id="t-vel">—</span>
+          </div>
+          <div class="telem-cell">
+            <span class="telem-label">Latitude</span>
+            <span class="telem-value" id="t-lat">—</span>
+          </div>
+          <div class="telem-cell">
+            <span class="telem-label">Longitude</span>
+            <span class="telem-value" id="t-lon">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Passes -->
+    <div class="tab-panel" id="panel-passes">
+      <div class="panel-scroll" id="passes-scroll">
+        <div id="passes-content">
+          <div class="empty-state">
+            <div class="empty-icon">📡</div>
+            <p>Set your location in Settings<br>to see upcoming passes</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="tab-panel" id="panel-settings">
+      <div class="panel-scroll">
+        <div class="settings-content">
+
+          <div class="settings-section">
+            <div class="section-title">Your Location</div>
+            <div class="current-location" id="current-location">
+              <span>📍</span><span id="location-text">Not set</span>
+            </div>
+            <button class="btn btn-primary" id="btn-detect">Use My Location</button>
+            <div class="manual-form">
+              <div class="form-label">Or enter coordinates:</div>
+              <div class="coords-row">
+                <div class="input-group">
+                  <label>Latitude</label>
+                  <input type="number" id="lat-input" placeholder="e.g. 51.5"
+                         min="-90" max="90" step="0.0001" inputmode="decimal">
+                </div>
+                <div class="input-group">
+                  <label>Longitude</label>
+                  <input type="number" id="lon-input" placeholder="e.g. -0.12"
+                         min="-180" max="180" step="0.0001" inputmode="decimal">
+                </div>
+              </div>
+              <button class="btn btn-secondary" id="btn-set-location">Set Location</button>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="section-title">Notifications</div>
+            <div id="notif-status"></div>
+            <button class="btn btn-primary" id="btn-notif">🔔 Enable Pass Notifications</button>
+            <div class="notif-bullets">
+              <div class="notif-bullet">⏰ 24 hours before each pass</div>
+              <div class="notif-bullet">⏰ 1 hour before each pass</div>
+              <div class="notif-bullet">⏰ 5 minutes before each pass</div>
+            </div>
+            <div class="ios-hint" id="ios-hint" style="display:none">
+              <strong>iPhone tip:</strong> Tap the share button → "Add to Home Screen" first,
+              then open the installed app and enable notifications.
+            </div>
+            <div class="settings-note">
+              Notifications are scheduled locally — no account or server needed.
+              Open the app at least once a day to keep them scheduled.
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="section-title">About</div>
+            <div class="about-grid">
+              <div class="about-row"><span>Satellite</span><span>ISS — NORAD 25544</span></div>
+              <div class="about-row"><span>Data</span><span>wheretheiss.at</span></div>
+              <div class="about-row"><span>Propagator</span><span>SGP4</span></div>
+              <div class="about-row"><span>Min elevation</span><span>10°</span></div>
+              <div class="about-row"><span>Prediction window</span><span>7 days</span></div>
+              <div class="about-row"><span>TLE updated</span><span id="tle-age">—</span></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Tab Bar ────────────────────────────────────────────────── -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="map">
+      <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </svg>
+      <span>Live</span>
+    </button>
+    <button class="tab-btn" data-tab="passes">
+      <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
+      </svg>
+      <span>Passes</span>
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      <span>Settings</span>
+    </button>
+  </nav>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/satellite.js@4.1.3/dist/satellite.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

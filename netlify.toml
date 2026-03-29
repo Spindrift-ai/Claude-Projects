@@ -1,0 +1,9 @@
+[build]
+  publish = "iss-tracker-web"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Service-Worker-Allowed = "/"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
