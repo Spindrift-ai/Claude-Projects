@@ -12,10 +12,12 @@ const TLE_TTL_MS       = 3600 * 1000;
 // ── State ──────────────────────────────────────────────────────────────────────
 let map, issMarker, userMarker, trackLine, passTrackLine;
 let satrec = null;
+let tleLine1 = null, tleLine2 = null;   // kept for passing to the worker
 let userLat = null, userLon = null;
 let passes  = [];
 let passesComputing = false;
 let passRefreshTimer = null;
+let passWorker = null;
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -63,6 +65,7 @@ async function fetchTLE() {
   const cachedAt  = Number(localStorage.getItem('tle_at') || 0);
   if (cachedTLE && (Date.now() - cachedAt) < TLE_TTL_MS) {
     const { line1, line2 } = JSON.parse(cachedTLE);
+    tleLine1 = line1; tleLine2 = line2;
     satrec = satellite.twoline2satrec(line1, line2);
     setTLEAge(cachedAt);
     scheduleNextTLEFetch();
@@ -89,6 +92,7 @@ async function doFetchTLE() {
       return;
     }
   }
+  tleLine1 = line1; tleLine2 = line2;
   satrec = satellite.twoline2satrec(line1, line2);
   const now = Date.now();
   localStorage.setItem('tle', JSON.stringify({ line1, line2 }));
@@ -247,27 +251,60 @@ function computePasses(lat, lon) {
 }
 
 function recomputePasses() {
-  if (userLat === null || !satrec) {
-    renderPasses(); // show appropriate state
+  if (userLat === null || !satrec || !tleLine1) {
+    renderPasses();
     return;
   }
+  // Cancel any in-progress worker
+  if (passWorker) { passWorker.terminate(); passWorker = null; }
   passesComputing = true;
-  renderPasses(); // show "Computing…" state immediately
+  renderPasses();
   setStatus('Computing passes…');
-  // Yield to browser then compute (avoids UI freeze on slow phones)
-  setTimeout(() => {
-    passes = computePasses(userLat, userLon);
+
+  try {
+    passWorker = new Worker('pass-worker.js');
+  } catch (e) {
+    // Worker not supported — fall back to synchronous (may freeze briefly on slow devices)
+    try { passes = computePasses(userLat, userLon); } catch (_) { passes = []; }
     passesComputing = false;
+    passWorker = null;
+    drawNextPassTrack();
+    renderPasses();
+    scheduleNotifications();
+    return;
+  }
+
+  passWorker.onmessage = function (e) {
+    passWorker = null;
+    passesComputing = false;
+    if (e.data.error) {
+      console.error('pass-worker error:', e.data.error);
+      passes = [];
+    } else {
+      // Worker sends timestamps; convert to Date objects for the main thread
+      passes = e.data.passes.map(p => ({
+        ...p,
+        start: new Date(p.start),
+        peak:  new Date(p.peak),
+        end:   new Date(p.end)
+      }));
+    }
     drawNextPassTrack();
     renderPasses();
     scheduleNotifications();
     if (passRefreshTimer) clearInterval(passRefreshTimer);
-    passRefreshTimer = setInterval(() => {
-      passes = computePasses(userLat, userLon);
-      renderPasses();
-      scheduleNotifications();
-    }, 30 * 60000);
-  }, 50);
+    passRefreshTimer = setInterval(recomputePasses, 30 * 60000);
+  };
+
+  passWorker.onerror = function (e) {
+    console.error('pass-worker threw:', e.message);
+    passWorker = null;
+    passesComputing = false;
+    passes = [];
+    renderPasses();
+  };
+
+  passWorker.postMessage({ lat: userLat, lon: userLon, line1: tleLine1, line2: tleLine2 });
 }
 
 // Draw the next upcoming pass ground track on the map
