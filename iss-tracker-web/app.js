@@ -355,7 +355,7 @@ function renderPasses() {
   const dayFmt  = new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' });
 
   let html = '';
-  if (Notification?.permission !== 'granted') {
+  if (window.Notification?.permission !== 'granted') {
     html += `<div class="notif-cta">
       <div class="notif-cta-body">
         <strong>🔔 Get pass alerts</strong>
@@ -417,7 +417,7 @@ async function enableNotifications() {
     alert('Notifications are not supported in this browser.\n\nOn iPhone, add this page to your Home Screen first, then open it from there.');
     return;
   }
-  const perm = await Notification.requestPermission();
+  const perm = await window.Notification.requestPermission();
   refreshNotifUI();
   if (perm === 'granted') {
     localStorage.setItem('notif', '1');
@@ -428,7 +428,7 @@ async function enableNotifications() {
 }
 
 function scheduleNotifications() {
-  if (Notification?.permission !== 'granted' || !passes.length) return;
+  if (window.Notification?.permission !== 'granted' || !passes.length) return;
   const payload = { type: 'SCHEDULE', passes: passes.map(p => ({
     start: p.start.getTime(), end: p.end.getTime(),
     peakEl: p.peakEl, startAz: p.startAz, endAz: p.endAz
@@ -444,13 +444,13 @@ function refreshNotifUI() {
     status.textContent = '';
     return;
   }
-  if (Notification.permission === 'granted') {
+  if (window.Notification?.permission === 'granted') {
     btn.textContent = '✓ Notifications Enabled';
     btn.className   = 'btn on';
     btn.disabled    = true;
     status.textContent = 'You\'ll be alerted 24 h, 1 h, and 5 min before each pass.';
     status.className   = 'ok';
-  } else if (Notification.permission === 'denied') {
+  } else if (window.Notification?.permission === 'denied') {
     btn.textContent  = 'Notifications Blocked';
     btn.className    = 'btn off';
     btn.disabled     = true;
@@ -493,7 +493,7 @@ function loadSavedState() {
     console.warn('loadSavedState failed:', e);
   }
   try {
-    if (localStorage.getItem('notif') === '1' && Notification?.permission === 'granted') {
+    if (localStorage.getItem('notif') === '1' && window.Notification?.permission === 'granted') {
       refreshNotifUI();
     }
   } catch (e) {}
