@@ -12,12 +12,11 @@ const TLE_TTL_MS       = 3600 * 1000;
 // ── State ──────────────────────────────────────────────────────────────────────
 let map, issMarker, userMarker, trackLine, passTrackLine;
 let satrec = null;
-let tleLine1 = null, tleLine2 = null;   // kept for passing to the worker
+let tleLine1 = null, tleLine2 = null;
 let userLat = null, userLon = null;
 let passes  = [];
 let passesComputing = false;
 let passRefreshTimer = null;
-let passWorker = null;
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -206,15 +205,20 @@ function issInSunlight(posEci, sunUnit) {
   return perp2 > 6371 * 6371;  // outside Earth's shadow cylinder
 }
 
-function computePasses(lat, lon) {
+// Async chunked pass computation — yields to browser every 1000 steps so iOS stays responsive
+async function computePassesAsync(lat, lon) {
   if (!satrec) return [];
   const obs = { longitude: satellite.degreesToRadians(lon), latitude: satellite.degreesToRadians(lat), height: 0 };
   const now = Date.now();
   const end = now + PASS_DAYS * 86400000;
   const result = [];
   let inPass = false, cur = null;
+  let step = 0;
 
   for (let t = now; t < end; t += STEP_SEC * 1000) {
+    // Yield to the browser every 1000 iterations to prevent UI freeze
+    if (step++ % 1000 === 0) await new Promise(r => setTimeout(r, 0));
+
     const date   = new Date(t);
     const pv     = satellite.propagate(satrec, date);
     if (!pv || !pv.position) continue;
@@ -230,19 +234,15 @@ function computePasses(lat, lon) {
         cur = { start: date, peak: date, peakEl: el, peakAz: az,
                 startAz: az, endAz: az, peakPosEci: pv.position };
       } else {
-        if (el > cur.peakEl) {
-          cur.peak = date; cur.peakEl = el; cur.peakAz = az;
-          cur.peakPosEci = pv.position;
-        }
+        if (el > cur.peakEl) { cur.peak = date; cur.peakEl = el; cur.peakAz = az; cur.peakPosEci = pv.position; }
         cur.endAz = az;
       }
     } else if (inPass) {
       inPass = false;
       cur.end = date;
-      // Only keep the pass if observer is in darkness AND ISS is sunlit at peak
-      const sunVec = sunEciUnit(cur.peak);
-      const obsInDark   = sunElevDeg(cur.peak, lat, lon) < 0;  // after sunset / before sunrise
-      const issLit      = issInSunlight(cur.peakPosEci, sunVec);
+      const sunVec    = sunEciUnit(cur.peak);
+      const obsInDark = sunElevDeg(cur.peak, lat, lon) < 0;
+      const issLit    = issInSunlight(cur.peakPosEci, sunVec);
       if (obsInDark && issLit) result.push(cur);
       cur = null;
     }
@@ -250,61 +250,27 @@ function computePasses(lat, lon) {
   return result;
 }
 
-function recomputePasses() {
-  if (userLat === null || !satrec || !tleLine1) {
-    renderPasses();
-    return;
-  }
-  // Cancel any in-progress worker
-  if (passWorker) { passWorker.terminate(); passWorker = null; }
+async function recomputePasses() {
+  if (userLat === null || !satrec) { renderPasses(); return; }
+  if (passesComputing) return; // don't stack concurrent computations
   passesComputing = true;
   renderPasses();
   setStatus('Computing passes…');
 
   try {
-    passWorker = new Worker('pass-worker.js');
+    passes = await computePassesAsync(userLat, userLon);
   } catch (e) {
-    // Worker not supported — fall back to synchronous (may freeze briefly on slow devices)
-    try { passes = computePasses(userLat, userLon); } catch (_) { passes = []; }
+    console.error('Pass computation error:', e);
+    passes = [];
+  } finally {
     passesComputing = false;
-    passWorker = null;
-    drawNextPassTrack();
-    renderPasses();
-    scheduleNotifications();
-    return;
   }
 
-  passWorker.onmessage = function (e) {
-    passWorker = null;
-    passesComputing = false;
-    if (e.data.error) {
-      console.error('pass-worker error:', e.data.error);
-      passes = [];
-    } else {
-      // Worker sends timestamps; convert to Date objects for the main thread
-      passes = e.data.passes.map(p => ({
-        ...p,
-        start: new Date(p.start),
-        peak:  new Date(p.peak),
-        end:   new Date(p.end)
-      }));
-    }
-    drawNextPassTrack();
-    renderPasses();
-    scheduleNotifications();
-    if (passRefreshTimer) clearInterval(passRefreshTimer);
-    passRefreshTimer = setInterval(recomputePasses, 30 * 60000);
-  };
-
-  passWorker.onerror = function (e) {
-    console.error('pass-worker threw:', e.message);
-    passWorker = null;
-    passesComputing = false;
-    passes = [];
-    renderPasses();
-  };
-
-  passWorker.postMessage({ lat: userLat, lon: userLon, line1: tleLine1, line2: tleLine2 });
+  drawNextPassTrack();
+  renderPasses();
+  scheduleNotifications();
+  if (passRefreshTimer) clearInterval(passRefreshTimer);
+  passRefreshTimer = setInterval(recomputePasses, 30 * 60000);
 }
 
 // Draw the next upcoming pass ground track on the map
