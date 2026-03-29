@@ -20,14 +20,17 @@ let passRefreshTimer = null;
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('[ISS] DOMContentLoaded');
   registerSW();
   initMap();
   initTabs();
   loadSavedState();
+  console.log('[ISS] location after loadSavedState:', userLat, userLon);
   fetchTLE().then(() => {
+    console.log('[ISS] TLE ready, satrec:', !!satrec, 'userLat:', userLat);
     startTracking();
     if (userLat !== null) recomputePasses();
-  });
+  }).catch(e => console.error('[ISS] fetchTLE rejected:', e));
   refreshNotifUI();
   detectIOS();
 });
@@ -75,19 +78,24 @@ async function fetchTLE() {
 
 async function doFetchTLE() {
   let line1, line2;
+  console.log('[ISS] fetching TLE from primary…');
   try {
     const r    = await fetch(TLE_URL_PRIMARY);
     const data = await r.json();
     line1 = data.line1; line2 = data.line2;
-  } catch {
+    console.log('[ISS] primary TLE ok, line1 length:', line1 && line1.length);
+  } catch (e1) {
+    console.warn('[ISS] primary TLE failed:', e1);
     try {
+      console.log('[ISS] trying fallback TLE…');
       const r    = await fetch(TLE_URL_FALLBACK);
       const data = await r.json();
       line1 = data.line1; line2 = data.line2;
+      console.log('[ISS] fallback TLE ok');
     } catch (e) {
-      console.error('TLE fetch failed:', e);
+      console.error('[ISS] both TLE sources failed:', e);
       setStatus('TLE unavailable – retrying…');
-      setTimeout(doFetchTLE, 60_000);
+      setTimeout(doFetchTLE, 60000);
       return;
     }
   }
@@ -251,16 +259,19 @@ async function computePassesAsync(lat, lon) {
 }
 
 async function recomputePasses() {
+  console.log('[ISS] recomputePasses — userLat:', userLat, 'satrec:', !!satrec, 'computing:', passesComputing);
   if (userLat === null || !satrec) { renderPasses(); return; }
-  if (passesComputing) return; // don't stack concurrent computations
+  if (passesComputing) return;
   passesComputing = true;
   renderPasses();
   setStatus('Computing passes…');
 
   try {
+    console.log('[ISS] starting computePassesAsync…');
     passes = await computePassesAsync(userLat, userLon);
+    console.log('[ISS] computation done — passes found:', passes.length);
   } catch (e) {
-    console.error('Pass computation error:', e);
+    console.error('[ISS] pass computation error:', e);
     passes = [];
   } finally {
     passesComputing = false;
