@@ -75,6 +75,11 @@
               <span>📍</span><span id="location-text">Not set</span>
             </div>
             <button class="btn btn-primary" id="btn-detect">Use My Location</button>
+            <div class="addr-row">
+              <input type="text" id="addr-input" placeholder="Search city, address, or ZIP…" inputmode="search" autocomplete="off">
+              <button class="btn-addr" id="btn-addr-search">Go</button>
+            </div>
+            <div id="addr-status" class="addr-status"></div>
             <div class="manual-form">
               <div class="form-label">Or enter coordinates:</div>
               <div class="coords-row">
@@ -109,6 +114,28 @@
             <div class="settings-note">
               Notifications are scheduled locally — no account or server needed.
               Open the app at least once a day to keep them scheduled.
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="section-title">Map Legend</div>
+            <div class="legend-items">
+              <div class="legend-item">
+                <svg width="40" height="12"><line x1="0" y1="6" x2="40" y2="6" stroke="#4a9eff" stroke-width="2" stroke-dasharray="5 4" opacity=".7"/></svg>
+                <span>ISS ground track (last 15 min)</span>
+              </div>
+              <div class="legend-item">
+                <svg width="40" height="12"><line x1="0" y1="6" x2="40" y2="6" stroke="#f7e04a" stroke-width="2" stroke-dasharray="8 5" opacity=".6"/></svg>
+                <span>Next visible pass ground track</span>
+              </div>
+              <div class="legend-item">
+                <svg width="40" height="12"><circle cx="20" cy="6" r="5" fill="#4a9eff" opacity=".85"/></svg>
+                <span>Your location</span>
+              </div>
+              <div class="legend-item">
+                <svg width="40" height="12"><circle cx="20" cy="6" r="5" fill="#f7e04a"/></svg>
+                <span>ISS current position</span>
+              </div>
             </div>
           </div>
 
@@ -165,5 +192,12 @@
     }
   </script>
   <script src="app.js"></script>
+
+  <div id="pass-detail-overlay" class="det-overlay" onclick="closePassDetail()">
+    <div class="det-sheet" onclick="event.stopPropagation()">
+      <div class="det-handle"></div>
+      <div id="pass-detail-content" class="det-body"></div>
+    </div>
+  </div>
 </body>
 </html>

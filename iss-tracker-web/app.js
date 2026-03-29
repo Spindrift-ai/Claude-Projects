@@ -17,6 +17,7 @@ let userLat = null, userLon = null;
 let passes  = [];
 let passesComputing = false;
 let passRefreshTimer = null;
+let weatherData = null;
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -213,6 +214,43 @@ function issInSunlight(posEci, sunUnit) {
   return perp2 > 6371 * 6371;  // outside Earth's shadow cylinder
 }
 
+// ── Weather (Open-Meteo, free, no key) ────────────────────────────────────────
+async function fetchWeather(lat, lon) {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=cloud_cover&timezone=auto&forecast_days=7`;
+    const r = await fetch(url);
+    weatherData = (await r.json()).hourly;
+    console.log('[ISS] weather ok');
+  } catch (e) { console.warn('[ISS] weather fetch failed:', e); weatherData = null; }
+}
+
+function getCloudCoverAt(date) {
+  if (!weatherData) return null;
+  const t = date.getTime();
+  let best = null, bestDiff = Infinity;
+  for (let i = 0; i < weatherData.time.length; i++) {
+    const diff = Math.abs(new Date(weatherData.time[i]).getTime() - t);
+    if (diff < bestDiff) { bestDiff = diff; best = weatherData.cloud_cover[i]; }
+  }
+  return best;
+}
+
+// ── Geocoding (Nominatim / OpenStreetMap) ─────────────────────────────────────
+async function geocodeAddress(query) {
+  try {
+    const url = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(query) + '&format=json&limit=1';
+    const r = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const data = await r.json();
+    if (data && data.length > 0) {
+      // Shorten display name: take first two comma-separated parts
+      const parts = data[0].display_name.split(',');
+      const name = parts.slice(0, 2).join(',').trim();
+      return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), name };
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
 // Async chunked pass computation — yields to browser every 1000 steps so iOS stays responsive
 async function computePassesAsync(lat, lon) {
   if (!satrec) return [];
@@ -270,6 +308,8 @@ async function recomputePasses() {
     console.log('[ISS] starting computePassesAsync…');
     passes = await computePassesAsync(userLat, userLon);
     console.log('[ISS] computation done — passes found:', passes.length);
+    await fetchWeather(userLat, userLon);
+    for (const p of passes) p.cloudPct = getCloudCoverAt(p.peak);
   } catch (e) {
     console.error('[ISS] pass computation error:', e);
     passes = [];
@@ -314,13 +354,15 @@ function drawNextPassTrack() {
 // ── Passes Rendering ───────────────────────────────────────────────────────────
 const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
 const compass  = az => COMPASS[Math.round(az / 22.5) % 16];
-function passRating(maxEl, durSec) {
+function passRating(maxEl, durSec, cloudPct) {
   const base = maxEl >= 75 ? 5 : maxEl >= 55 ? 4 : maxEl >= 35 ? 3 : maxEl >= 18 ? 2 : 1;
   const bonus = (durSec >= 300 && maxEl >= 18 && maxEl < 75) ? 1 : 0;
-  return Math.min(5, base + bonus);
+  const penalty = (cloudPct == null) ? 0 : cloudPct >= 80 ? 2 : cloudPct >= 50 ? 1 : 0;
+  return Math.max(1, Math.min(5, base + bonus - penalty));
 }
 const ratingStars = r => '★'.repeat(r) + '☆'.repeat(5 - r);
 const durFmt      = s => s >= 60 ? `${Math.floor(s/60)}m ${s % 60}s` : `${s}s`;
+const cloudIcon   = pct => pct == null ? '' : pct < 20 ? '☀️' : pct < 50 ? '⛅' : pct < 80 ? '🌥️' : '☁️';
 
 function renderPasses() {
   const el = document.getElementById('passes-content');
@@ -381,7 +423,7 @@ function renderPasses() {
       const sec    = (p.start - now) / 1000;
       const isNow  = now >= p.start && now <= p.end;
       const durSec = Math.round((p.end - p.start) / 1000);
-      const rating = passRating(p.peakEl, durSec);
+      const rating = passRating(p.peakEl, durSec, p.cloudPct);
       let badge;
       if (isNow)         badge = `<span class="pass-badge badge-now">NOW</span>`;
       else if (sec < 3600) badge = `<span class="pass-badge badge-soon">in ${Math.floor(sec / 60)}m</span>`;
@@ -390,16 +432,19 @@ function renderPasses() {
         badge = `<span class="pass-badge badge-hours">in ${h}h ${m}m</span>`;
       } else badge = `<span class="pass-badge badge-days">in ${Math.floor(sec / 86400)}d</span>`;
 
-      html += `<div class="pass-card r${rating}${isNow ? ' active-now' : ''}">
-        <span class="pass-quality q-r${rating}">${ratingStars(rating)}</span>
+      html += `<div class="pass-card r${rating}${isNow ? ' active-now' : ''}" onclick="openPassDetail(${passes.indexOf(p)})">
         <div class="pass-header">
           <span class="pass-time">${timeFmt.format(p.start)}</span>
-          ${badge}
+          <div class="pass-meta">
+            <span class="pass-quality q-r${rating}">${ratingStars(rating)}</span>
+            ${badge}
+          </div>
         </div>
         <div class="pass-details">
           <span>${compass(p.startAz)} → ${compass(p.endAz)}</span>
           <span>Max <strong>${p.peakEl.toFixed(0)}°</strong></span>
           <span>${durFmt(durSec)}</span>
+          ${p.cloudPct != null ? `<span>${cloudIcon(p.cloudPct)} ${p.cloudPct}%</span>` : ''}
         </div>
       </div>`;
     }
@@ -410,6 +455,57 @@ function renderPasses() {
 
 // Refresh countdowns every minute
 setInterval(() => { if (userLat !== null) renderPasses(); }, 60_000);
+
+// ── Pass Detail Modal ──────────────────────────────────────────────────────────
+function openPassDetail(idx) {
+  const p = passes[idx];
+  if (!p) return;
+  const durSec = Math.round((p.end - p.start) / 1000);
+  const rating = passRating(p.peakEl, durSec, p.cloudPct);
+  const tf = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' });
+  const df = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' });
+  const cloudStr = p.cloudPct == null ? 'Weather unavailable'
+    : `${cloudIcon(p.cloudPct)} ${p.cloudPct}% — ${p.cloudPct < 20 ? 'Clear skies' : p.cloudPct < 50 ? 'Partly cloudy' : p.cloudPct < 80 ? 'Mostly cloudy' : 'Overcast'}`;
+  const visNote = p.cloudPct >= 80 ? 'Heavy cloud cover — ISS may not be visible.' : p.cloudPct >= 50 ? 'Moderate cloud cover may reduce visibility.' : '';
+
+  document.getElementById('pass-detail-content').innerHTML = `
+    <div class="det-header">
+      <div class="det-date">${df.format(p.start)}</div>
+      <div class="det-time">${tf.format(p.start)} – ${tf.format(p.end)}</div>
+      <div class="det-stars q-r${rating}">${ratingStars(rating)}</div>
+    </div>
+    <div class="det-events">
+      <div class="det-event">
+        <div class="det-ev-label">Appears</div>
+        <div class="det-ev-time">${tf.format(p.start)}</div>
+        <div class="det-ev-dir">${compass(p.startAz)}</div>
+      </div>
+      <div class="det-event det-event-peak">
+        <div class="det-ev-label">Peak</div>
+        <div class="det-ev-time">${tf.format(p.peak)}</div>
+        <div class="det-ev-dir">${compass(p.peakAz)}</div>
+        <div class="det-ev-el">${p.peakEl.toFixed(0)}° up</div>
+      </div>
+      <div class="det-event">
+        <div class="det-ev-label">Disappears</div>
+        <div class="det-ev-time">${tf.format(p.end)}</div>
+        <div class="det-ev-dir">${compass(p.endAz)}</div>
+      </div>
+    </div>
+    <div class="det-stats">
+      <div class="det-stat"><span>Duration</span><strong>${durFmt(durSec)}</strong></div>
+      <div class="det-stat"><span>Max elevation</span><strong>${p.peakEl.toFixed(1)}°</strong></div>
+      <div class="det-stat"><span>Cloud cover</span><strong>${cloudStr}</strong></div>
+    </div>
+    ${visNote ? `<div class="det-note">${visNote}</div>` : ''}
+    <div class="det-guide">Face <strong>${compass(p.startAz)}</strong> at <strong>${tf.format(p.start)}</strong> and look toward the horizon. Track the ISS as it arcs to <strong>${p.peakEl.toFixed(0)}°</strong> in the <strong>${compass(p.peakAz)}</strong>.</div>
+  `;
+  document.getElementById('pass-detail-overlay').classList.add('open');
+}
+
+function closePassDetail() {
+  document.getElementById('pass-detail-overlay').classList.remove('open');
+}
 
 // ── Notifications ──────────────────────────────────────────────────────────────
 async function enableNotifications() {
@@ -460,13 +556,14 @@ function refreshNotifUI() {
 }
 
 // ── Location ───────────────────────────────────────────────────────────────────
-function setLocation(lat, lon) {
+function setLocation(lat, lon, displayName) {
   userLat = lat; userLon = lon;
-  localStorage.setItem('loc', JSON.stringify({ lat, lon }));
+  const locLabel = displayName || `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  localStorage.setItem('loc', JSON.stringify({ lat, lon, displayName: displayName || null }));
 
   document.getElementById('lat-input').value = lat.toFixed(4);
   document.getElementById('lon-input').value = lon.toFixed(4);
-  document.getElementById('location-text').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  document.getElementById('location-text').textContent = locLabel;
   document.getElementById('current-location').style.color = 'var(--text)';
 
   if (userMarker) map.removeLayer(userMarker);
@@ -480,12 +577,13 @@ function setLocation(lat, lon) {
 
 function loadSavedState() {
   try {
-    const loc = localStorage.getItem('loc');
-    if (loc) {
-      const { lat, lon } = JSON.parse(loc);
+    const raw = localStorage.getItem('loc');
+    if (raw) {
+      const { lat, lon, displayName } = JSON.parse(raw);
+      const locLabel = displayName || `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
       document.getElementById('lat-input').value = lat.toFixed(4);
       document.getElementById('lon-input').value = lon.toFixed(4);
-      document.getElementById('location-text').textContent = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+      document.getElementById('location-text').textContent = locLabel;
       document.getElementById('current-location').style.color = 'var(--text)';
       userLat = lat; userLon = lon;
     }
@@ -547,6 +645,26 @@ document.getElementById('btn-set-location').addEventListener('click', () => {
 });
 
 document.getElementById('btn-notif').addEventListener('click', enableNotifications);
+
+document.getElementById('btn-addr-search').addEventListener('click', async () => {
+  const query = document.getElementById('addr-input').value.trim();
+  if (!query) return;
+  const status = document.getElementById('addr-status');
+  status.textContent = 'Searching…'; status.className = 'addr-status';
+  const result = await geocodeAddress(query);
+  if (result) {
+    status.textContent = result.name;
+    status.className = 'addr-status';
+    setLocation(result.lat, result.lon, result.name);
+  } else {
+    status.textContent = 'Location not found. Try a city name or ZIP code.';
+    status.className = 'addr-status err';
+  }
+});
+
+document.getElementById('addr-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-addr-search').click();
+});
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function setStatus(msg) { document.getElementById('status-text').textContent = msg; }
