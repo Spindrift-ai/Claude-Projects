@@ -1,0 +1,44 @@
+name: ISSTracker
+
+options:
+  bundleIdPrefix: com.issTracker
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  ISSTracker:
+    type: application
+    platform: iOS
+    sources:
+      - ISSTracker
+    info:
+      path: ISSTracker/Info.plist
+      properties:
+        CFBundleDisplayName: ISS Tracker
+        NSLocationWhenInUseUsageDescription: "Your location is used to predict when the ISS will pass overhead."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Your location is used to predict when the ISS will pass overhead."
+        UILaunchStoryboardName: LaunchScreen
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.issTracker.refresh
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.issTracker.ISSTracker
+        INFOPLIST_FILE: ISSTracker/Info.plist

@@ -1,0 +1,26 @@
+## Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.xcuserstate
+project.xcworkspace
+
+## Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+## CocoaPods
+Pods/
+Podfile.lock
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
