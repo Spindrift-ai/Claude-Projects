@@ -110,9 +110,12 @@
               <span>📍</span><span id="location-text">Not set</span>
             </div>
             <button class="btn btn-primary" id="btn-detect">Use My Location</button>
-            <div class="addr-row">
-              <input type="text" id="addr-input" placeholder="Search city, address, or ZIP…" inputmode="search" autocomplete="off">
-              <button class="btn-addr" id="btn-addr-search">Go</button>
+            <div class="addr-wrap">
+              <div class="addr-row">
+                <input type="text" id="addr-input" placeholder="Search city, address, or ZIP…" inputmode="search" autocomplete="off">
+                <button class="btn-addr" id="btn-addr-search">Go</button>
+              </div>
+              <div id="addr-suggestions" class="addr-suggestions"></div>
             </div>
             <div id="addr-status" class="addr-status"></div>
             <div class="manual-form">

@@ -342,22 +342,49 @@ html, body {
 }
 
 /* ── Address search ─────────────────────────────────────────── */
+.addr-wrap { position: relative; }
 .addr-row {
-  display: flex; gap: 8px; margin-bottom: 6px; margin-top: 8px;
+  display: flex; gap: 8px; margin-bottom: 0; margin-top: 8px;
 }
 .addr-row input {
   flex: 1; background: var(--bg); border: 1px solid var(--border);
   border-radius: 9px; color: var(--text); padding: 10px 12px;
   font-size: 15px; -webkit-appearance: none; appearance: none;
+  transition: border-radius .1s;
 }
 .addr-row input:focus { outline: none; border-color: var(--accent); }
+.addr-row input.has-suggestions {
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  border-color: var(--accent);
+}
 .btn-addr {
   padding: 10px 18px; border-radius: 9px; border: none;
   background: var(--accent); color: #fff; font-size: 15px;
   font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;
 }
 .btn-addr:active { opacity: .72; }
-.addr-status { font-size: 13px; min-height: 18px; color: var(--text2); margin-bottom: 6px; }
+
+.addr-suggestions {
+  display: none;
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-top: none;
+  border-radius: 0 0 9px 9px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.addr-sug-item {
+  padding: 11px 13px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  -webkit-tap-highlight-color: transparent;
+}
+.addr-sug-item:last-child { border-bottom: none; }
+.addr-sug-item:active, .addr-sug-item.focused { background: var(--bg3); }
+.addr-sug-main { font-size: 14px; color: var(--text); }
+.addr-sug-sub  { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+.addr-status { font-size: 13px; min-height: 18px; color: var(--text2); margin-bottom: 6px; margin-top: 6px; }
 .addr-status.err { color: var(--red); }
 
 /* ── Map legend ─────────────────────────────────────────────── */

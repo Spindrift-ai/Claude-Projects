@@ -646,6 +646,8 @@ async function startAR() {
     }
   }
 
+  // Listen to absolute orientation (Android) and regular (iOS webkitCompassHeading)
+  window.addEventListener('deviceorientationabsolute', handleOrientation, true);
   window.addEventListener('deviceorientation', handleOrientation, true);
   arActive = true;
   document.getElementById('ar-start-overlay').style.display = 'none';
@@ -659,6 +661,7 @@ function stopAR() {
   arActive = false;
   if (arStream) { arStream.getTracks().forEach(t => t.stop()); arStream = null; }
   if (arAnimFrame) { cancelAnimationFrame(arAnimFrame); arAnimFrame = null; }
+  window.removeEventListener('deviceorientationabsolute', handleOrientation, true);
   window.removeEventListener('deviceorientation', handleOrientation, true);
   window.removeEventListener('resize', resizeARCanvas);
   const video = document.getElementById('ar-video');
@@ -669,16 +672,20 @@ function stopAR() {
 }
 
 function handleOrientation(e) {
-  // webkitCompassHeading is more reliable on iOS (already compensated for declination)
-  if (e.webkitCompassHeading != null) {
+  // Priority: iOS webkitCompassHeading → Android absolute alpha → plain alpha
+  if (isFinite(e.webkitCompassHeading) && e.webkitCompassHeading >= 0) {
+    // iOS: degrees clockwise from magnetic north, already true-north compensated
     deviceHeading = e.webkitCompassHeading;
-  } else if (e.alpha != null) {
-    // alpha is CCW from north; convert to CW compass bearing
+  } else if ((e.absolute === true || e.type === 'deviceorientationabsolute') && isFinite(e.alpha)) {
+    // Android absolute: alpha is CCW from geographic north → convert to CW
+    deviceHeading = (360 - e.alpha) % 360;
+  } else if (isFinite(e.alpha) && e.absolute !== false) {
+    // Fallback: non-tagged alpha that may still be compass-relative on some browsers
     deviceHeading = (360 - e.alpha) % 360;
   }
-  // beta = 90° → holding phone vertical, looking at horizon (elevation 0°)
-  // beta = 0°  → phone flat face-up, looking straight up (elevation 90°)
-  if (e.beta != null) {
+  // beta = 90° → phone vertical, looking at horizon (0° elevation)
+  // beta = 0°  → phone flat face-up, looking straight up (90° elevation)
+  if (isFinite(e.beta)) {
     const b = Math.min(90, Math.max(0, Math.abs(e.beta)));
     devicePitch = 90 - b;
   }
@@ -970,8 +977,75 @@ document.getElementById('btn-addr-search').addEventListener('click', async () =>
 });
 
 document.getElementById('addr-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('btn-addr-search').click();
+  if (e.key === 'Escape') { hideAddrSuggestions(); return; }
+  if (e.key === 'Enter')  { document.getElementById('btn-addr-search').click(); return; }
 });
+
+document.getElementById('addr-input').addEventListener('input', () => {
+  clearTimeout(addrSuggestTimer);
+  const q = document.getElementById('addr-input').value.trim();
+  if (q.length < 3) { hideAddrSuggestions(); return; }
+  addrSuggestTimer = setTimeout(() => fetchAddrSuggestions(q), 380);
+});
+
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest('.addr-wrap')) hideAddrSuggestions();
+});
+
+// ── Address autocomplete ───────────────────────────────────────────────────────
+let addrSuggestTimer = null;
+
+async function fetchAddrSuggestions(query) {
+  try {
+    const url = 'https://nominatim.openstreetmap.org/search?q=' +
+      encodeURIComponent(query) + '&format=json&limit=5&addressdetails=0';
+    const r = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const data = await r.json();
+    renderAddrSuggestions(data);
+  } catch (e) { /* network error — ignore */ }
+}
+
+function renderAddrSuggestions(results) {
+  const box   = document.getElementById('addr-suggestions');
+  const input = document.getElementById('addr-input');
+  if (!results || results.length === 0) { hideAddrSuggestions(); return; }
+
+  box.innerHTML = results.map(r => {
+    const parts = r.display_name.split(',');
+    const main  = parts[0].trim();
+    const sub   = parts.slice(1, 3).join(',').trim();
+    return `<div class="addr-sug-item"
+                 data-lat="${r.lat}" data-lon="${r.lon}"
+                 data-name="${sub ? main + ', ' + sub : main}">
+      <div class="addr-sug-main">${escHtml(main)}</div>
+      ${sub ? `<div class="addr-sug-sub">${escHtml(sub)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  box.querySelectorAll('.addr-sug-item').forEach(item => {
+    item.addEventListener('pointerdown', e => e.preventDefault()); // keep input focus
+    item.addEventListener('click', () => {
+      const name = item.dataset.name;
+      input.value = name;
+      document.getElementById('addr-status').textContent = name;
+      document.getElementById('addr-status').className = 'addr-status';
+      hideAddrSuggestions();
+      setLocation(parseFloat(item.dataset.lat), parseFloat(item.dataset.lon), name);
+    });
+  });
+
+  box.style.display = 'block';
+  input.classList.add('has-suggestions');
+}
+
+function hideAddrSuggestions() {
+  document.getElementById('addr-suggestions').style.display = 'none';
+  document.getElementById('addr-input').classList.remove('has-suggestions');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
 document.getElementById('btn-ar-start').addEventListener('click', startAR);
 document.getElementById('btn-ar-stop').addEventListener('click', stopAR);
