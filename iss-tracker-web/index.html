@@ -64,6 +64,41 @@
       </div>
     </div>
 
+    <!-- AR Sky View -->
+    <div class="tab-panel" id="panel-ar">
+      <div class="ar-container" id="ar-container">
+        <video id="ar-video" autoplay playsinline muted></video>
+        <canvas id="ar-canvas"></canvas>
+        <div class="ar-hud">
+          <div class="ar-hud-values">
+            <div class="ar-hud-item">
+              <div class="ar-hud-val" id="ar-iss-az">—</div>
+              <div class="ar-hud-label">ISS Direction</div>
+            </div>
+            <div class="ar-hud-item">
+              <div class="ar-hud-val" id="ar-iss-el">—</div>
+              <div class="ar-hud-label">Elevation</div>
+            </div>
+            <div class="ar-hud-item">
+              <div class="ar-hud-val" id="ar-dev-az">—</div>
+              <div class="ar-hud-label">Your Heading</div>
+            </div>
+          </div>
+        </div>
+        <button class="ar-stop-btn" id="btn-ar-stop" style="display:none">Stop</button>
+        <div class="ar-start-overlay" id="ar-start-overlay">
+          <div class="ar-start-content">
+            <div class="ar-start-icon">🔭</div>
+            <div class="ar-start-title">AR Sky View</div>
+            <div class="ar-start-desc">Point your phone at the sky to find the ISS in real time using your camera</div>
+            <div id="ar-prereq" class="ar-prereq"></div>
+            <button class="btn btn-primary" id="btn-ar-start">Start AR View</button>
+            <div class="ar-requires">Requires location, camera &amp; orientation sensor</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Settings -->
     <div class="tab-panel" id="panel-settings">
       <div class="panel-scroll">
@@ -170,6 +205,13 @@
         <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
       </svg>
       <span>Passes</span>
+    </button>
+    <button class="tab-btn" data-tab="ar">
+      <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+        <circle cx="12" cy="13" r="4"/>
+      </svg>
+      <span>AR</span>
     </button>
     <button class="tab-btn" data-tab="settings">
       <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -597,10 +597,317 @@ function loadSavedState() {
   } catch (e) {}
 }
 
+// ── AR Sky View ───────────────────────────────────────────────────────────────
+let arStream      = null;
+let arAnimFrame   = null;
+let arActive      = false;
+let deviceHeading = null;   // compass bearing phone is pointing (0=N, 90=E)
+let devicePitch   = null;   // elevation angle being looked at (degrees)
+
+const AR_FOV_H = 65;   // approximate horizontal camera FOV (degrees)
+const AR_FOV_V = 50;   // approximate vertical camera FOV (degrees)
+
+async function startAR() {
+  const prereq = document.getElementById('ar-prereq');
+
+  if (userLat === null) {
+    prereq.textContent = 'Set your location in Settings first.';
+    return;
+  }
+  prereq.textContent = '';
+
+  // Request camera
+  try {
+    arStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    const video = document.getElementById('ar-video');
+    video.srcObject = arStream;
+    await video.play();
+  } catch (e) {
+    prereq.textContent = 'Camera access denied. Allow camera in browser settings.';
+    arStream = null;
+    return;
+  }
+
+  // Request DeviceOrientationEvent permission (iOS 13+)
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const perm = await DeviceOrientationEvent.requestPermission();
+      if (perm !== 'granted') {
+        prereq.textContent = 'Motion sensor access denied. Enable in Settings > Safari.';
+        stopAR();
+        return;
+      }
+    } catch (e) {
+      console.warn('[AR] orientation permission error:', e);
+    }
+  }
+
+  window.addEventListener('deviceorientation', handleOrientation, true);
+  arActive = true;
+  document.getElementById('ar-start-overlay').style.display = 'none';
+  document.getElementById('btn-ar-stop').style.display = 'block';
+  resizeARCanvas();
+  window.addEventListener('resize', resizeARCanvas);
+  renderAR();
+}
+
+function stopAR() {
+  arActive = false;
+  if (arStream) { arStream.getTracks().forEach(t => t.stop()); arStream = null; }
+  if (arAnimFrame) { cancelAnimationFrame(arAnimFrame); arAnimFrame = null; }
+  window.removeEventListener('deviceorientation', handleOrientation, true);
+  window.removeEventListener('resize', resizeARCanvas);
+  const video = document.getElementById('ar-video');
+  video.srcObject = null;
+  document.getElementById('ar-start-overlay').style.display = 'flex';
+  document.getElementById('btn-ar-stop').style.display = 'none';
+  deviceHeading = null; devicePitch = null;
+}
+
+function handleOrientation(e) {
+  // webkitCompassHeading is more reliable on iOS (already compensated for declination)
+  if (e.webkitCompassHeading != null) {
+    deviceHeading = e.webkitCompassHeading;
+  } else if (e.alpha != null) {
+    // alpha is CCW from north; convert to CW compass bearing
+    deviceHeading = (360 - e.alpha) % 360;
+  }
+  // beta = 90° → holding phone vertical, looking at horizon (elevation 0°)
+  // beta = 0°  → phone flat face-up, looking straight up (elevation 90°)
+  if (e.beta != null) {
+    const b = Math.min(90, Math.max(0, Math.abs(e.beta)));
+    devicePitch = 90 - b;
+  }
+}
+
+function resizeARCanvas() {
+  const canvas = document.getElementById('ar-canvas');
+  const cont   = document.getElementById('ar-container');
+  canvas.width  = cont.clientWidth;
+  canvas.height = cont.clientHeight;
+}
+
+function getISSLookAngles() {
+  if (!satrec || userLat === null) return null;
+  const now    = new Date();
+  const posVel = satellite.propagate(satrec, now);
+  if (!posVel?.position) return null;
+  const gmst   = satellite.gstime(now);
+  const obs    = { longitude: satellite.degreesToRadians(userLon), latitude: satellite.degreesToRadians(userLat), height: 0 };
+  const posEcf = satellite.eciToEcf(posVel.position, gmst);
+  const look   = satellite.ecfToLookAngles(obs, posEcf);
+  return {
+    az:    satellite.radiansToDegrees(look.azimuth),
+    el:    satellite.radiansToDegrees(look.elevation),
+    range: look.rangeSat
+  };
+}
+
+function renderAR() {
+  if (!arActive) return;
+  arAnimFrame = requestAnimationFrame(renderAR);
+
+  const canvas = document.getElementById('ar-canvas');
+  const ctx    = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const look = getISSLookAngles();
+
+  // Update HUD
+  const issAzEl = look ? `${compass(look.az)} ${look.az.toFixed(0)}°` : '—';
+  const issElStr = look ? `${look.el.toFixed(1)}°` : '—';
+  const hdgStr = deviceHeading != null ? `${compass(deviceHeading)} ${deviceHeading.toFixed(0)}°` : 'No sensor';
+  document.getElementById('ar-iss-az').textContent = issAzEl;
+  document.getElementById('ar-iss-el').textContent = issElStr;
+  document.getElementById('ar-dev-az').textContent = hdgStr;
+
+  if (!look) {
+    drawARMsg(ctx, W, H, 'Waiting for ISS data…');
+    return;
+  }
+
+  const issAz = look.az, issEl = look.el;
+
+  if (deviceHeading === null) {
+    drawARMsg(ctx, W, H, 'Waiting for compass…\nMove device in a figure-8 to calibrate');
+    return;
+  }
+
+  // Compass rose overlay
+  drawARCompass(ctx, W, H, deviceHeading, issAz);
+
+  if (issEl <= 0) {
+    drawARMsg(ctx, W, H, 'ISS is below the horizon');
+    return;
+  }
+
+  // Project ISS onto screen
+  let deltaAz = issAz - deviceHeading;
+  if (deltaAz > 180) deltaAz -= 360;
+  if (deltaAz < -180) deltaAz += 360;
+  const deltaEl = issEl - (devicePitch ?? 0);
+
+  const x = W / 2 + (deltaAz / AR_FOV_H) * W;
+  const y = H / 2 - (deltaEl / AR_FOV_V) * H;
+
+  const margin = 60;
+  const onScreen = x >= margin && x <= W - margin && y >= margin && y <= H - margin;
+
+  if (onScreen) {
+    drawARTarget(ctx, x, y, issEl);
+  } else {
+    drawARArrow(ctx, x, y, W, H, issEl);
+  }
+}
+
+function drawARTarget(ctx, x, y, elev) {
+  // Outer ring
+  ctx.strokeStyle = '#4a9eff';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(x, y, 42, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Corner tick marks only (crosshair feel)
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = '#4a9eff';
+  const gap = 48, len = 14;
+  for (const [dx, dy] of [[-1,-1],[1,-1],[1,1],[-1,1]]) {
+    ctx.beginPath();
+    ctx.moveTo(x + dx * gap, y + dy * len);
+    ctx.lineTo(x + dx * gap, y + dy * gap);
+    ctx.lineTo(x + dx * len, y + dy * gap);
+    ctx.stroke();
+  }
+
+  // Centre dot
+  ctx.fillStyle = '#4a9eff';
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Label
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('ISS', x, y - 56);
+  ctx.fillStyle = '#4a9eff';
+  ctx.font = '12px -apple-system, sans-serif';
+  ctx.fillText(elev.toFixed(1) + '° above horizon', x, y - 41);
+}
+
+function drawARArrow(ctx, issX, issY, W, H, issEl) {
+  const cx = W / 2, cy = H / 2;
+  const angle = Math.atan2(issY - cy, issX - cx);
+  const margin = 56;
+
+  // Find intersection with viewport edge
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const tx = cos > 0 ? (W - margin - cx) / cos : (margin - cx) / cos;
+  const ty = sin > 0 ? (H - margin - cy) / sin : (margin - cy) / sin;
+  const t  = Math.min(Math.abs(tx), Math.abs(ty));
+  const ax = cx + cos * t;
+  const ay = cy + sin * t;
+
+  // Arrow
+  ctx.save();
+  ctx.translate(ax, ay);
+  ctx.rotate(angle);
+  ctx.strokeStyle = '#f7e04a';
+  ctx.fillStyle   = '#f7e04a';
+  ctx.lineWidth   = 2.5;
+  ctx.setLineDash([]);
+
+  ctx.beginPath();
+  ctx.moveTo(-22, 0); ctx.lineTo(8, 0);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(22, 0);
+  ctx.lineTo(9, -9); ctx.lineTo(9, 9);
+  ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+
+  // Label near arrow
+  const lx = ax + Math.cos(angle + Math.PI) * 34;
+  const ly = ay + Math.sin(angle + Math.PI) * 34;
+  ctx.fillStyle = '#f7e04a';
+  ctx.font = 'bold 12px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('ISS ' + issEl.toFixed(0) + '°', lx, ly);
+}
+
+function drawARMsg(ctx, W, H, msg) {
+  ctx.fillStyle = 'rgba(0,0,0,.45)';
+  ctx.beginPath();
+  ctx.roundRect(W/2 - 160, H/2 - 30, 320, 60, 10);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.85)';
+  ctx.font = '15px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const lines = msg.split('\n');
+  lines.forEach((l, i) => ctx.fillText(l, W/2, H/2 + (i - (lines.length-1)/2) * 22));
+}
+
+function drawARCompass(ctx, W, H, heading, issAz) {
+  const cx = W / 2, cy = 52, r = 32;
+
+  ctx.fillStyle = 'rgba(0,0,0,.55)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + 6, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,255,255,.2)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Cardinal labels
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const [label, az] of [['N',0],['E',90],['S',180],['W',270]]) {
+    const relAngle = ((az - heading) * Math.PI / 180) - Math.PI / 2;
+    const lx = cx + Math.cos(relAngle) * r * 0.72;
+    const ly = cy + Math.sin(relAngle) * r * 0.72;
+    ctx.fillStyle = label === 'N' ? '#ff5a5a' : 'rgba(255,255,255,.65)';
+    ctx.fillText(label, lx, ly);
+  }
+
+  // ISS dot on compass ring
+  const issAngle = ((issAz - heading) * Math.PI / 180) - Math.PI / 2;
+  ctx.fillStyle = '#4a9eff';
+  ctx.beginPath();
+  ctx.arc(cx + Math.cos(issAngle) * (r - 5), cy + Math.sin(issAngle) * (r - 5), 4.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Fixed heading pointer (triangle at top)
+  ctx.fillStyle = 'rgba(255,255,255,.8)';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r - 3);
+  ctx.lineTo(cx - 5, cy - r + 6);
+  ctx.lineTo(cx + 5, cy - r + 6);
+  ctx.closePath(); ctx.fill();
+}
+
 // ── Tabs ───────────────────────────────────────────────────────────────────────
 function initTabs() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      const prevActive = document.querySelector('.tab-btn.active');
+      if (prevActive && prevActive.dataset.tab === 'ar') stopAR();
       document.querySelectorAll('.tab-btn,.tab-panel').forEach(el => el.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
@@ -665,6 +972,9 @@ document.getElementById('btn-addr-search').addEventListener('click', async () =>
 document.getElementById('addr-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-addr-search').click();
 });
+
+document.getElementById('btn-ar-start').addEventListener('click', startAR);
+document.getElementById('btn-ar-stop').addEventListener('click', stopAR);
 
 // ── Pass Detail Modal ──────────────────────────────────────────────────────────
 function openPassDetail(idx) {
