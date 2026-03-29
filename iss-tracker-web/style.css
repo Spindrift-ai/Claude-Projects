@@ -155,9 +155,11 @@ html, body {
   margin-bottom: 9px;
   position: relative;
 }
-.pass-card.excellent { border-left-color: var(--green); }
-.pass-card.good      { border-left-color: var(--accent); }
-.pass-card.fair      { border-left-color: var(--orange); }
+.pass-card.r1 { border-left-color: #505870; }
+.pass-card.r2 { border-left-color: var(--orange); }
+.pass-card.r3 { border-left-color: var(--accent); }
+.pass-card.r4 { border-left-color: #4adec8; }
+.pass-card.r5 { border-left-color: var(--green); }
 .pass-card.active-now {
   background: #0c1c10;
   border-color: var(--green);
@@ -190,9 +192,11 @@ html, body {
   position: absolute; top: 10px; right: 11px;
   font-size: 11px; letter-spacing: 1px;
 }
-.q-excellent { color: var(--green); }
-.q-good      { color: var(--accent); }
-.q-fair      { color: var(--orange); }
+.q-r1 { color: #505870; }
+.q-r2 { color: var(--orange); }
+.q-r3 { color: var(--accent); }
+.q-r4 { color: #4adec8; }
+.q-r5 { color: var(--green); }
 
 /* Notification CTA inside passes tab */
 .notif-cta {

@@ -165,18 +165,54 @@ function getElevation(posEci, gmst, lat, lon) {
 }
 
 // ── Pass Computation ───────────────────────────────────────────────────────────
+
+// Low-precision solar ECI unit vector (~0.5° accuracy, sufficient for day/night)
+function sunEciUnit(date) {
+  const jd  = date.getTime() / 86400000 + 2440587.5;
+  const n   = jd - 2451545.0;
+  const L   = (280.460 + 0.9856474 * n) % 360;
+  const g   = ((357.528 + 0.9856003 * n) % 360) * Math.PI / 180;
+  const lam = (L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * Math.PI / 180;
+  const eps = 23.439 * Math.PI / 180;
+  return { x: Math.cos(lam), y: Math.cos(eps) * Math.sin(lam), z: Math.sin(eps) * Math.sin(lam) };
+}
+
+// Sun elevation (degrees) at observer — negative means night
+function sunElevDeg(date, latDeg, lonDeg) {
+  const sun  = sunEciUnit(date);
+  const gmst = satellite.gstime(date);
+  const cg = Math.cos(gmst), sg = Math.sin(gmst);
+  const sx = sun.x * cg + sun.y * sg;
+  const sy = -sun.x * sg + sun.y * cg;
+  const sz = sun.z;
+  const latR = latDeg * Math.PI / 180, lonR = lonDeg * Math.PI / 180;
+  const dot  = Math.cos(latR) * Math.cos(lonR) * sx +
+               Math.cos(latR) * Math.sin(lonR) * sy +
+               Math.sin(latR) * sz;
+  return Math.asin(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+}
+
+// Returns true if the satellite ECI position (km) is in sunlight (not in Earth's umbra)
+function issInSunlight(posEci, sunUnit) {
+  const dot = posEci.x * sunUnit.x + posEci.y * sunUnit.y + posEci.z * sunUnit.z;
+  if (dot > 0) return true;  // satellite on the sun-facing side
+  const r2    = posEci.x ** 2 + posEci.y ** 2 + posEci.z ** 2;
+  const perp2 = r2 - dot * dot;
+  return perp2 > 6371 * 6371;  // outside Earth's shadow cylinder
+}
+
 function computePasses(lat, lon) {
   if (!satrec) return [];
   const obs = { longitude: satellite.degreesToRadians(lon), latitude: satellite.degreesToRadians(lat), height: 0 };
   const now = Date.now();
-  const end = now + PASS_DAYS * 86400_000;
+  const end = now + PASS_DAYS * 86400000;
   const result = [];
   let inPass = false, cur = null;
 
   for (let t = now; t < end; t += STEP_SEC * 1000) {
     const date   = new Date(t);
     const pv     = satellite.propagate(satrec, date);
-    if (!pv?.position) continue;
+    if (!pv || !pv.position) continue;
     const gmst   = satellite.gstime(date);
     const posEcf = satellite.eciToEcf(pv.position, gmst);
     const look   = satellite.ecfToLookAngles(obs, posEcf);
@@ -186,13 +222,24 @@ function computePasses(lat, lon) {
     if (el >= MIN_ELEV_DEG) {
       if (!inPass) {
         inPass = true;
-        cur = { start: date, peak: date, peakEl: el, peakAz: az, startAz: az, endAz: az };
+        cur = { start: date, peak: date, peakEl: el, peakAz: az,
+                startAz: az, endAz: az, peakPosEci: pv.position };
       } else {
-        if (el > cur.peakEl) { cur.peak = date; cur.peakEl = el; cur.peakAz = az; }
+        if (el > cur.peakEl) {
+          cur.peak = date; cur.peakEl = el; cur.peakAz = az;
+          cur.peakPosEci = pv.position;
+        }
         cur.endAz = az;
       }
     } else if (inPass) {
-      inPass = false; cur.end = date; result.push(cur); cur = null;
+      inPass = false;
+      cur.end = date;
+      // Only keep the pass if observer is in darkness AND ISS is sunlit at peak
+      const sunVec = sunEciUnit(cur.peak);
+      const obsInDark   = sunElevDeg(cur.peak, lat, lon) < -6;
+      const issLit      = issInSunlight(cur.peakPosEci, sunVec);
+      if (obsInDark && issLit) result.push(cur);
+      cur = null;
     }
   }
   return result;
@@ -246,9 +293,13 @@ function drawNextPassTrack() {
 // ── Passes Rendering ───────────────────────────────────────────────────────────
 const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
 const compass  = az => COMPASS[Math.round(az / 22.5) % 16];
-const quality  = el => el >= 60 ? 'excellent' : el >= 30 ? 'good' : 'fair';
-const stars    = el => el >= 60 ? '★★★' : el >= 30 ? '★★' : '★';
-const durFmt   = s  => s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+function passRating(maxEl, durSec) {
+  const base = maxEl >= 75 ? 5 : maxEl >= 55 ? 4 : maxEl >= 35 ? 3 : maxEl >= 18 ? 2 : 1;
+  const bonus = (durSec >= 300 && maxEl >= 18 && maxEl < 75) ? 1 : 0;
+  return Math.min(5, base + bonus);
+}
+const ratingStars = r => '★'.repeat(r) + '☆'.repeat(5 - r);
+const durFmt      = s => s >= 60 ? `${Math.floor(s/60)}m ${s % 60}s` : `${s}s`;
 
 function renderPasses() {
   const el = document.getElementById('passes-content');
@@ -256,8 +307,12 @@ function renderPasses() {
     el.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><p>Set your location in Settings<br>to see upcoming passes</p></div>`;
     return;
   }
+  if (!satrec) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⏳</div><p>Loading orbital data…<br><small style="color:var(--text2);font-size:13px">Fetching latest TLE from network</small></p></div>`;
+    return;
+  }
   if (!passes.length) {
-    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🔭</div><p>No visible passes (above 10°)<br>in the next ${PASS_DAYS} days</p></div>`;
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🌙</div><p>No visible night passes<br>in the next ${PASS_DAYS} days</p><p style="font-size:13px;margin-top:8px;color:var(--text2)">Only passes where it's dark at your location<br>and the ISS is sunlit are shown</p></div>`;
     return;
   }
 
@@ -265,7 +320,6 @@ function renderPasses() {
   const timeFmt = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' });
   const dayFmt  = new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' });
 
-  // Notification CTA
   let html = '';
   if (Notification?.permission !== 'granted') {
     html += `<div class="notif-cta">
@@ -290,19 +344,20 @@ function renderPasses() {
   for (const [label, group] of Object.entries(days)) {
     html += `<div class="passes-day"><div class="day-label">${label}</div>`;
     for (const p of group) {
-      const sec     = (p.start - now) / 1000;
-      const isNow   = now >= p.start && now <= p.end;
-      const durSec  = Math.round((p.end - p.start) / 1000);
-      const q       = quality(p.peakEl);
+      const sec    = (p.start - now) / 1000;
+      const isNow  = now >= p.start && now <= p.end;
+      const durSec = Math.round((p.end - p.start) / 1000);
+      const rating = passRating(p.peakEl, durSec);
       let badge;
-      if (isNow)       badge = `<span class="pass-badge badge-now">NOW</span>`;
-      else if (sec<3600) badge = `<span class="pass-badge badge-soon">in ${Math.floor(sec/60)}m</span>`;
-      else if (sec<86400){ const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);
-                           badge = `<span class="pass-badge badge-hours">in ${h}h ${m}m</span>`; }
-      else               badge = `<span class="pass-badge badge-days">in ${Math.floor(sec/86400)}d</span>`;
+      if (isNow)         badge = `<span class="pass-badge badge-now">NOW</span>`;
+      else if (sec < 3600) badge = `<span class="pass-badge badge-soon">in ${Math.floor(sec / 60)}m</span>`;
+      else if (sec < 86400) {
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+        badge = `<span class="pass-badge badge-hours">in ${h}h ${m}m</span>`;
+      } else badge = `<span class="pass-badge badge-days">in ${Math.floor(sec / 86400)}d</span>`;
 
-      html += `<div class="pass-card ${q}${isNow?' active-now':''}">
-        <span class="pass-quality q-${q}">${stars(p.peakEl)}</span>
+      html += `<div class="pass-card r${rating}${isNow ? ' active-now' : ''}">
+        <span class="pass-quality q-r${rating}">${ratingStars(rating)}</span>
         <div class="pass-header">
           <span class="pass-time">${timeFmt.format(p.start)}</span>
           ${badge}
