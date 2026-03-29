@@ -616,7 +616,26 @@ async function startAR() {
   }
   prereq.textContent = '';
 
-  // Request camera
+  // ── Step 1: orientation permission FIRST (iOS Safari requires this to be the
+  //   first await after the user tap — awaiting anything else first expires the
+  //   gesture context and causes a DOMException) ──────────────────────────────
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    let perm;
+    try {
+      perm = await DeviceOrientationEvent.requestPermission();
+    } catch (e) {
+      prereq.textContent = 'Motion sensor permission failed. Open this page from Safari (not an in-app browser).';
+      console.warn('[AR] orientation permission error:', e);
+      return;
+    }
+    if (perm !== 'granted') {
+      prereq.textContent = 'Motion sensor denied. Enable in iOS Settings > Safari > Motion & Orientation Access.';
+      return;
+    }
+  }
+
+  // ── Step 2: camera ─────────────────────────────────────────────────────────
   try {
     arStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -629,21 +648,6 @@ async function startAR() {
     prereq.textContent = 'Camera access denied. Allow camera in browser settings.';
     arStream = null;
     return;
-  }
-
-  // Request DeviceOrientationEvent permission (iOS 13+)
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    try {
-      const perm = await DeviceOrientationEvent.requestPermission();
-      if (perm !== 'granted') {
-        prereq.textContent = 'Motion sensor access denied. Enable in Settings > Safari.';
-        stopAR();
-        return;
-      }
-    } catch (e) {
-      console.warn('[AR] orientation permission error:', e);
-    }
   }
 
   // Listen to absolute orientation (Android) and regular (iOS webkitCompassHeading)
