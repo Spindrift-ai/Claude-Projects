@@ -444,7 +444,12 @@ function renderPasses() {
         badge = `<span class="pass-badge badge-hours">in ${h}h ${m}m</span>`;
       } else badge = `<span class="pass-badge badge-days">in ${Math.floor(sec / 86400)}d</span>`;
 
-      html += `<div class="pass-card r${rating}${isNow ? ' active-now' : ''}" onclick="openPassDetail(${passes.indexOf(p)})">
+      const pIdx      = passes.indexOf(p);
+      const notifOn   = window.Notification?.permission === 'granted' && isPassNotified(p);
+      const bellBtn   = window.Notification?.permission === 'granted'
+        ? `<button class="pass-bell${notifOn ? ' active' : ''}" onclick="event.stopPropagation();togglePassNotif(${pIdx})" title="${notifOn ? 'Remove notification' : 'Notify me for this pass'}">🔔</button>`
+        : '';
+      html += `<div class="pass-card r${rating}${isNow ? ' active-now' : ''}" onclick="openPassDetail(${pIdx})">
         <div class="pass-header">
           <span class="pass-time">${timeFmt.format(p.start)}</span>
           <div class="pass-meta">
@@ -458,6 +463,7 @@ function renderPasses() {
           <span>${durFmt(durSec)}</span>
           ${p.cloudPct != null ? `<span>${cloudIcon(p.cloudPct)} ${p.cloudPct}%</span>` : ''}
         </div>
+        ${bellBtn}
       </div>`;
     }
     html += '</div>';
@@ -468,58 +474,46 @@ function renderPasses() {
 // Refresh countdowns every minute
 setInterval(() => { if (userLat !== null) renderPasses(); }, 60_000);
 
-// ── Pass Detail Modal ──────────────────────────────────────────────────────────
-function openPassDetail(idx) {
+// ── Notifications ──────────────────────────────────────────────────────────────
+
+// Per-pass notification opt-in: stored as a JSON array of pass start timestamps.
+function getNotifSet() {
+  try { return new Set(JSON.parse(localStorage.getItem('notif_passes') || '[]')); }
+  catch (e) { return new Set(); }
+}
+function saveNotifSet(set) {
+  localStorage.setItem('notif_passes', JSON.stringify([...set]));
+}
+function isPassNotified(p) { return getNotifSet().has(p.start.getTime()); }
+
+function togglePassNotif(idx) {
   const p = passes[idx];
   if (!p) return;
-  const durSec = Math.round((p.end - p.start) / 1000);
-  const rating = passRating(p.peakEl, durSec, p.cloudPct);
-  const tf = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' });
-  const df = new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' });
-  const cloudStr = p.cloudPct == null ? 'Weather unavailable'
-    : `${cloudIcon(p.cloudPct)} ${p.cloudPct}% — ${p.cloudPct < 20 ? 'Clear skies' : p.cloudPct < 50 ? 'Partly cloudy' : p.cloudPct < 80 ? 'Mostly cloudy' : 'Overcast'}`;
-  const visNote = p.cloudPct >= 80 ? 'Heavy cloud cover — ISS may not be visible.' : p.cloudPct >= 50 ? 'Moderate cloud cover may reduce visibility.' : '';
-
-  document.getElementById('pass-detail-content').innerHTML = `
-    <div class="det-header">
-      <div class="det-date">${df.format(p.start)}</div>
-      <div class="det-time">${tf.format(p.start)} – ${tf.format(p.end)}</div>
-      <div class="det-stars q-r${rating}">${ratingStars(rating)}</div>
-    </div>
-    <div class="det-events">
-      <div class="det-event">
-        <div class="det-ev-label">Appears</div>
-        <div class="det-ev-time">${tf.format(p.start)}</div>
-        <div class="det-ev-dir">${compass(p.startAz)}</div>
-      </div>
-      <div class="det-event det-event-peak">
-        <div class="det-ev-label">Peak</div>
-        <div class="det-ev-time">${tf.format(p.peak)}</div>
-        <div class="det-ev-dir">${compass(p.peakAz)}</div>
-        <div class="det-ev-el">${p.peakEl.toFixed(0)}° up</div>
-      </div>
-      <div class="det-event">
-        <div class="det-ev-label">Disappears</div>
-        <div class="det-ev-time">${tf.format(p.end)}</div>
-        <div class="det-ev-dir">${compass(p.endAz)}</div>
-      </div>
-    </div>
-    <div class="det-stats">
-      <div class="det-stat"><span>Duration</span><strong>${durFmt(durSec)}</strong></div>
-      <div class="det-stat"><span>Max elevation</span><strong>${p.peakEl.toFixed(1)}°</strong></div>
-      <div class="det-stat"><span>Cloud cover</span><strong>${cloudStr}</strong></div>
-    </div>
-    ${visNote ? `<div class="det-note">${visNote}</div>` : ''}
-    <div class="det-guide">Face <strong>${compass(p.startAz)}</strong> at <strong>${tf.format(p.start)}</strong> and look toward the horizon. Track the ISS as it arcs to <strong>${p.peakEl.toFixed(0)}°</strong> in the <strong>${compass(p.peakAz)}</strong>.</div>
-  `;
-  document.getElementById('pass-detail-overlay').classList.add('open');
+  if (window.Notification?.permission !== 'granted') {
+    enableNotifications(); return;
+  }
+  const set = getNotifSet();
+  const key = p.start.getTime();
+  if (set.has(key)) set.delete(key); else set.add(key);
+  saveNotifSet(set);
+  scheduleNotifications();
+  renderPasses();
+  // Refresh bell state in detail modal if it's open for this pass
+  const overlay = document.getElementById('pass-detail-overlay');
+  if (overlay.classList.contains('open')) {
+    const btn = document.getElementById('det-notif-btn');
+    if (btn && btn.dataset.idx === String(idx)) updateDetailNotifBtn(idx);
+  }
 }
 
-function closePassDetail() {
-  document.getElementById('pass-detail-overlay').classList.remove('open');
+function updateDetailNotifBtn(idx) {
+  const btn = document.getElementById('det-notif-btn');
+  if (!btn) return;
+  const on = isPassNotified(passes[idx]);
+  btn.textContent  = on ? '🔔 Notified' : '🔕 Notify me';
+  btn.className    = on ? 'det-notif-btn active' : 'det-notif-btn';
 }
 
-// ── Notifications ──────────────────────────────────────────────────────────────
 async function enableNotifications() {
   if (!('Notification' in window)) {
     alert('Notifications are not supported in this browser.\n\nOn iPhone, add this page to your Home Screen first, then open it from there.');
@@ -530,6 +524,7 @@ async function enableNotifications() {
   if (perm === 'granted') {
     localStorage.setItem('notif', '1');
     scheduleNotifications();
+    renderPasses();   // show bells on pass cards now that permission is granted
   } else if (perm === 'denied') {
     alert('Notification permission denied. To fix this, go to your browser/phone settings and allow notifications for this site.');
   }
@@ -537,7 +532,9 @@ async function enableNotifications() {
 
 function scheduleNotifications() {
   if (window.Notification?.permission !== 'granted' || !passes.length) return;
-  const payload = { type: 'SCHEDULE', passes: passes.map(p => ({
+  const notifSet  = getNotifSet();
+  const toNotify  = passes.filter(p => notifSet.has(p.start.getTime()));
+  const payload = { type: 'SCHEDULE', passes: toNotify.map(p => ({
     start: p.start.getTime(), end: p.end.getTime(),
     peakEl: p.peakEl, startAz: p.startAz, endAz: p.endAz
   }))};
@@ -549,20 +546,22 @@ function refreshNotifUI() {
   const status = document.getElementById('notif-status');
   if (!('Notification' in window)) {
     btn.textContent = '🔔 Enable Pass Notifications';
-    status.textContent = '';
-    return;
+    status.textContent = ''; return;
   }
   if (window.Notification?.permission === 'granted') {
-    btn.textContent = '✓ Notifications Enabled';
-    btn.className   = 'btn on';
-    btn.disabled    = true;
-    status.textContent = 'You\'ll be alerted 24 h, 1 h, and 5 min before each pass.';
+    const n = getNotifSet().size;
+    btn.textContent    = '✓ Notifications Enabled';
+    btn.className      = 'btn on';
+    btn.disabled       = true;
+    status.textContent = n
+      ? `${n} pass${n > 1 ? 'es' : ''} scheduled — tap 🔔 on any pass to add or remove.`
+      : 'Tap 🔔 on any pass in the Passes tab to schedule alerts.';
     status.className   = 'ok';
   } else if (window.Notification?.permission === 'denied') {
-    btn.textContent  = 'Notifications Blocked';
-    btn.className    = 'btn off';
-    btn.disabled     = true;
-    status.textContent = 'Enable notifications in your browser settings to receive alerts.';
+    btn.textContent    = 'Notifications Blocked';
+    btn.className      = 'btn off';
+    btn.disabled       = true;
+    status.textContent = 'Enable notifications in your browser settings.';
     status.className   = 'err';
   }
 }
@@ -1147,6 +1146,12 @@ function openPassDetail(idx) {
     </div>
     ${visNote ? `<div class="det-note">${visNote}</div>` : ''}
     <div class="det-guide">Face <strong>${compass(p.startAz)}</strong> at <strong>${tf.format(p.start)}</strong> and look toward the horizon. Track the ISS as it arcs to <strong>${p.peakEl.toFixed(0)}°</strong> in the <strong>${compass(p.peakAz)}</strong>.</div>
+    ${window.Notification?.permission === 'granted'
+      ? `<button id="det-notif-btn" data-idx="${idx}" onclick="togglePassNotif(${idx})"
+           class="det-notif-btn${isPassNotified(p) ? ' active' : ''}">
+           ${isPassNotified(p) ? '🔔 Notified' : '🔕 Notify me for this pass'}
+         </button>`
+      : `<button class="det-notif-btn" onclick="enableNotifications()">🔔 Enable notifications</button>`}
   `;
   document.getElementById('pass-detail-overlay').classList.add('open');
 }
