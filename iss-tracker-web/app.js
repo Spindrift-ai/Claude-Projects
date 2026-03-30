@@ -613,11 +613,13 @@ function loadSavedState() {
 let arStream      = null;
 let arAnimFrame   = null;
 let arActive      = false;
-let deviceHeading = null;   // compass bearing phone is pointing (0=N, 90=E)
-let devicePitch   = null;   // elevation angle being looked at (degrees)
+let deviceHeading = null;   // smoothed compass bearing CW from N (degrees)
+let deviceBeta    = null;   // smoothed beta (tilt angle, degrees)
+let deviceGamma   = null;   // smoothed gamma (left-right tilt, degrees)
 
-const AR_FOV_H = 65;   // approximate horizontal camera FOV (degrees)
-const AR_FOV_V = 50;   // approximate vertical camera FOV (degrees)
+const AR_FOV_H    = 65;     // approximate horizontal camera FOV (degrees)
+const AR_FOV_V    = 50;     // approximate vertical camera FOV (degrees)
+const SENSOR_ALPHA = 0.18;  // EMA factor for sensor smoothing (lower = smoother, more lag)
 
 async function startAR() {
   const prereq = document.getElementById('ar-prereq');
@@ -684,27 +686,60 @@ function stopAR() {
   video.srcObject = null;
   document.getElementById('ar-start-overlay').style.display = 'flex';
   document.getElementById('btn-ar-stop').style.display = 'none';
-  deviceHeading = null; devicePitch = null;
+  deviceHeading = null; deviceBeta = null; deviceGamma = null;
+}
+
+// Angle-aware exponential moving average (handles 0/360 wrap correctly)
+function emaAngle(cur, next, alpha) {
+  if (cur === null) return next;
+  let d = next - cur;
+  if (d >  180) d -= 360;
+  if (d < -180) d += 360;
+  return cur + alpha * d;
 }
 
 function handleOrientation(e) {
   // Priority: iOS webkitCompassHeading → Android absolute alpha → plain alpha
+  let rawHeading = null;
   if (isFinite(e.webkitCompassHeading) && e.webkitCompassHeading >= 0) {
-    // iOS: degrees clockwise from magnetic north, already true-north compensated
-    deviceHeading = e.webkitCompassHeading;
+    rawHeading = e.webkitCompassHeading;
   } else if ((e.absolute === true || e.type === 'deviceorientationabsolute') && isFinite(e.alpha)) {
-    // Android absolute: alpha is CCW from geographic north → convert to CW
-    deviceHeading = (360 - e.alpha) % 360;
+    rawHeading = (360 - e.alpha) % 360;
   } else if (isFinite(e.alpha) && e.absolute !== false) {
-    // Fallback: non-tagged alpha that may still be compass-relative on some browsers
-    deviceHeading = (360 - e.alpha) % 360;
+    rawHeading = (360 - e.alpha) % 360;
   }
-  // beta = 90° → phone vertical, looking at horizon (0° elevation)
-  // beta = 0°  → phone flat face-up, looking straight up (90° elevation)
-  if (isFinite(e.beta)) {
-    const b = Math.min(90, Math.max(0, Math.abs(e.beta)));
-    devicePitch = 90 - b;
+  if (rawHeading !== null) {
+    deviceHeading = emaAngle(deviceHeading, rawHeading, SENSOR_ALPHA);
   }
+
+  if (isFinite(e.beta))  deviceBeta  = emaAngle(deviceBeta,  e.beta,  SENSOR_ALPHA);
+  if (isFinite(e.gamma)) deviceGamma = emaAngle(deviceGamma, e.gamma, SENSOR_ALPHA);
+}
+
+// Compute the world direction the back camera is pointing using the full
+// 3D device orientation rotation (heading × beta × gamma).
+// Returns { az: degrees CW from N, el: degrees above horizon } or null.
+function getCameraLookDir() {
+  if (deviceHeading === null || deviceBeta === null) return null;
+
+  // Rotation chain: Rz(-heading) · Rx(beta) · Ry(-gamma) applied to (0,0,-1)
+  // World frame: X = East, Y = North, Z = Up
+  // Derivation gives (with heading CW, all in radians):
+  const h = deviceHeading * Math.PI / 180;   // CW from N
+  const b = (deviceBeta  ?? 90) * Math.PI / 180;
+  const g = (deviceGamma ??  0) * Math.PI / 180;
+
+  const cH = Math.cos(h), sH = Math.sin(h);
+  const sB = Math.sin(b), cB = Math.cos(b);
+  const sG = Math.sin(g), cG = Math.cos(g);
+
+  const east  =  cH * sG + sH * sB * cG;
+  const north = -sH * sG + cH * sB * cG;
+  const up    = -cB * cG;
+
+  const az = (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
+  const el = Math.asin(Math.max(-1, Math.min(1, up))) * 180 / Math.PI;
+  return { az, el };
 }
 
 function resizeARCanvas() {
@@ -741,39 +776,33 @@ function renderAR() {
 
   const look = getISSLookAngles();
 
-  // Update HUD
-  const issAzEl = look ? `${compass(look.az)} ${look.az.toFixed(0)}°` : '—';
-  const issElStr = look ? `${look.el.toFixed(1)}°` : '—';
-  const hdgStr = deviceHeading != null ? `${compass(deviceHeading)} ${deviceHeading.toFixed(0)}°` : 'No sensor';
-  document.getElementById('ar-iss-az').textContent = issAzEl;
-  document.getElementById('ar-iss-el').textContent = issElStr;
-  document.getElementById('ar-dev-az').textContent = hdgStr;
+  const camDir = getCameraLookDir();
 
-  if (!look) {
-    drawARMsg(ctx, W, H, 'Waiting for ISS data…');
-    return;
-  }
+  // Update HUD
+  document.getElementById('ar-iss-az').textContent = look ? `${compass(look.az)} ${look.az.toFixed(0)}°` : '—';
+  document.getElementById('ar-iss-el').textContent = look ? `${look.el.toFixed(1)}°` : '—';
+  document.getElementById('ar-dev-az').textContent = camDir
+    ? `${compass(camDir.az)} ${camDir.az.toFixed(0)}°` : 'No sensor';
+
+  if (!look) { drawARMsg(ctx, W, H, 'Waiting for ISS data…'); return; }
 
   const issAz = look.az, issEl = look.el;
 
-  if (deviceHeading === null) {
+  if (!camDir) {
     drawARMsg(ctx, W, H, 'Waiting for compass…\nMove device in a figure-8 to calibrate');
     return;
   }
 
-  // Compass rose overlay
+  // Compass rose shows device heading (top of phone bearing), not camera look az
   drawARCompass(ctx, W, H, deviceHeading, issAz);
 
-  if (issEl <= 0) {
-    drawARMsg(ctx, W, H, 'ISS is below the horizon');
-    return;
-  }
+  if (issEl <= 0) { drawARMsg(ctx, W, H, 'ISS is below the horizon'); return; }
 
-  // Project ISS onto screen
-  let deltaAz = issAz - deviceHeading;
-  if (deltaAz > 180) deltaAz -= 360;
+  // Project ISS onto screen using camera look direction (accounts for beta + gamma)
+  let deltaAz = issAz - camDir.az;
+  if (deltaAz >  180) deltaAz -= 360;
   if (deltaAz < -180) deltaAz += 360;
-  const deltaEl = issEl - (devicePitch ?? 0);
+  const deltaEl = issEl - camDir.el;
 
   const x = W / 2 + (deltaAz / AR_FOV_H) * W;
   const y = H / 2 - (deltaEl / AR_FOV_V) * H;
