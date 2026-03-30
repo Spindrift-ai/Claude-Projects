@@ -49,8 +49,14 @@ function registerSW() {
 function initMap() {
   map = L.map('map', { center: [20, 0], zoom: 2, zoomControl: true, attributionControl: false });
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  // Dark base tiles (no labels) — keeps the black aesthetic
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
     subdomains: 'abcd', maxZoom: 19
+  }).addTo(map);
+
+  // English-only label overlay from ESRI (light text, transparent background)
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16, opacity: 0.9
   }).addTo(map);
 
   const issIcon = L.divIcon({
@@ -238,11 +244,17 @@ function getCloudCoverAt(date) {
 // ── Geocoding (Nominatim / OpenStreetMap) ─────────────────────────────────────
 async function geocodeAddress(query) {
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(query) + '&format=json&limit=1';
-    const r = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    let params = 'q=' + encodeURIComponent(query) + '&format=json&limit=1';
+    if (userLat !== null && userLon !== null) {
+      const d = 10;
+      params += `&viewbox=${userLon - d},${userLat + d},${userLon + d},${userLat - d}&bounded=0`;
+    } else {
+      params += '&countrycodes=us';
+    }
+    const r = await fetch('https://nominatim.openstreetmap.org/search?' + params,
+      { headers: { 'Accept-Language': 'en' } });
     const data = await r.json();
     if (data && data.length > 0) {
-      // Shorten display name: take first two comma-separated parts
       const parts = data[0].display_name.split(',');
       const name = parts.slice(0, 2).join(',').trim();
       return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), name };
@@ -1001,9 +1013,16 @@ let addrSuggestTimer = null;
 
 async function fetchAddrSuggestions(query) {
   try {
-    const url = 'https://nominatim.openstreetmap.org/search?q=' +
-      encodeURIComponent(query) + '&format=json&limit=5&addressdetails=0';
-    const r = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    let params = 'q=' + encodeURIComponent(query) + '&format=json&limit=5&addressdetails=0';
+    if (userLat !== null && userLon !== null) {
+      // Bias toward user's location; bounded=0 means still return results outside the box
+      const d = 10;
+      params += `&viewbox=${userLon - d},${userLat + d},${userLon + d},${userLat - d}&bounded=0`;
+    } else {
+      params += '&countrycodes=us';   // default to US when no location set
+    }
+    const r = await fetch('https://nominatim.openstreetmap.org/search?' + params,
+      { headers: { 'Accept-Language': 'en' } });
     const data = await r.json();
     renderAddrSuggestions(data);
   } catch (e) { /* network error — ignore */ }
