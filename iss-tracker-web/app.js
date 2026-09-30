@@ -49,14 +49,8 @@ function registerSW() {
 function initMap() {
   map = L.map('map', { center: [20, 0], zoom: 2, zoomControl: true, attributionControl: false });
 
-  // Dark base tiles (no labels) — keeps the black aesthetic
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     subdomains: 'abcd', maxZoom: 19
-  }).addTo(map);
-
-  // English-only label overlay from ESRI (light text, transparent background)
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 16, opacity: 0.9
   }).addTo(map);
 
   const issIcon = L.divIcon({
