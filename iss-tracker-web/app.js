@@ -47,10 +47,13 @@ function registerSW() {
 
 // ── Map ────────────────────────────────────────────────────────────────────────
 function initMap() {
-  map = L.map('map', { center: [20, 0], zoom: 2, zoomControl: true, attributionControl: false });
+  map = L.map('map', { center: [20, 0], zoom: 2, zoomControl: true, attributionControl: true });
+  map.attributionControl.setPrefix(false);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    subdomains: 'abcd', maxZoom: 19
+  // Free OpenStreetMap tiles (no API key); darkened via CSS on .osm-dark
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, className: 'osm-dark',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map);
 
   const issIcon = L.divIcon({

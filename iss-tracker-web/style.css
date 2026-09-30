@@ -129,7 +129,13 @@ html, body {
 }
 .leaflet-control-zoom a:hover { background: var(--bg3) !important; }
 .leaflet-bar { border: 1px solid var(--border) !important; box-shadow: none !important; }
-.leaflet-control-attribution { display: none; }
+.osm-dark { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6); }
+.leaflet-control-attribution {
+  background: rgba(10,14,26,.7) !important;
+  color: var(--text2, #8892a4) !important;
+  font-size: 9px !important;
+}
+.leaflet-control-attribution a { color: inherit !important; }
 
 /* ── Scrollable panels ─────────────────────────────────────── */
 .panel-scroll {
